@@ -1,0 +1,17 @@
+[package]
+name = "tsq"
+version = "0.1.0"
+edition = "2024"
+description = "A toy 8-step sequencer"
+repository = "https://github.com/eiri/tsq"
+keywords = ["audio", "sequencer", "music"]
+categories = ["multimedia::audio"]
+authors = ["Eric Avdey <eiri@eiri.ca>"]
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+cpal = "0.17"
+crossterm = "0.29.0"
+fastrand = "2.3.0"
+fundsp = "0.23"
