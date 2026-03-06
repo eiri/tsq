@@ -29,13 +29,14 @@ $ cargo build
 $ cargo test
 $ cargo run
 
-tsq running — pattern:
-  kick:      [x] [ ] [ ] [ ] [x] [ ] [ ] [ ]
-  hh closed: [x] [x] [x] [x] [x] [x] [x] [x]
-  hh open:   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [x]
-  tone:      [x] [ ] [x] [ ] [ ] [x] [ ] [x]
-
-  [ ] [ ] [x] [ ] [ ] [ ] [ ] [ ]   120 BPM  (q to quit)
+╭ tsq ────────────────────────╮
+│ kick:      [x] [ ] [ ] [ ] [x] [ ] [ ] [ ]  │
+│ hh closed: [x] [x] [x] [x] [x] [x] [x] [x]  │
+│ hh open:   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [x]  │
+│ tone:      [x] [ ] [x] [ ] [ ] [x] [ ] [x]  │
+│                                             │
+│ 120 BPM  voice: sine    r randomize  q quit │
+╰───────────────────────────╯
 ```
 
 ## License

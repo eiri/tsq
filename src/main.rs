@@ -1,12 +1,11 @@
 mod sequencer;
+mod ui;
 mod voices;
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal;
 
-use sequencer::{AudioClock, STEPS, SharedState, ToneVoice, new_shared_state, random_pattern};
+use sequencer::{AudioClock, STEPS, SharedState, ToneVoice, new_shared_state};
 use voices::{Voice, hihat_closed, hihat_open, kick, square_tone, tone};
 
 // C major scale from middle C (C4) to C5, one note per step
@@ -102,117 +101,8 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
     Ok(stream)
 }
 
-fn print_state(step: usize, bpm: f64) {
-    let indicator: String = (0..STEPS)
-        .map(|i| if i == step { "[x]" } else { "[ ]" })
-        .collect::<Vec<_>>()
-        .join(" ");
-    print!("\r\x1B[2K  {indicator}   {bpm} BPM  (q to quit)");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-}
-
 fn main() -> Result<()> {
     let shared = new_shared_state();
     let _stream = build_audio_stream(shared.clone())?;
-
-    println!("tsq running — pattern:");
-    println!(
-        "  kick:      {}",
-        shared
-            .lock()
-            .unwrap()
-            .pattern
-            .kick
-            .map(|b| if b { "[x]" } else { "[ ]" })
-            .join(" ")
-    );
-    println!(
-        "  hh closed: {}",
-        shared
-            .lock()
-            .unwrap()
-            .pattern
-            .hihat_closed
-            .map(|b| if b { "[x]" } else { "[ ]" })
-            .join(" ")
-    );
-    println!(
-        "  hh open:   {}",
-        shared
-            .lock()
-            .unwrap()
-            .pattern
-            .hihat_open
-            .map(|b| if b { "[x]" } else { "[ ]" })
-            .join(" ")
-    );
-    println!(
-        "  tone:      {}",
-        shared
-            .lock()
-            .unwrap()
-            .pattern
-            .tone
-            .map(|b| if b { "[x]" } else { "[ ]" })
-            .join(" ")
-    );
-    println!();
-
-    terminal::enable_raw_mode()?;
-    loop {
-        let (step, bpm) = {
-            let s = shared.lock().unwrap();
-            (s.current_step, s.bpm)
-        };
-        print_state(step, bpm);
-
-        if event::poll(std::time::Duration::from_millis(16))?
-            && let Event::Key(key) = event::read()?
-        {
-            match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Char('r') => {
-                    let mut s = shared.lock().unwrap();
-                    s.pattern = random_pattern();
-                    s.reset = true;
-                    terminal::disable_raw_mode()?;
-                    print!("\x1B[5A\r");
-                    println!(
-                        "  kick:      {}",
-                        s.pattern
-                            .kick
-                            .map(|b| if b { "[x]" } else { "[ ]" })
-                            .join(" ")
-                    );
-                    println!(
-                        "  hh closed: {}",
-                        s.pattern
-                            .hihat_closed
-                            .map(|b| if b { "[x]" } else { "[ ]" })
-                            .join(" ")
-                    );
-                    println!(
-                        "  hh open:   {}",
-                        s.pattern
-                            .hihat_open
-                            .map(|b| if b { "[x]" } else { "[ ]" })
-                            .join(" ")
-                    );
-                    println!(
-                        "  tone:      {}",
-                        s.pattern
-                            .tone
-                            .map(|b| if b { "[x]" } else { "[ ]" })
-                            .join(" ")
-                    );
-                    println!();
-                    terminal::enable_raw_mode()?;
-                }
-                _ => {}
-            }
-        }
-    }
-    terminal::disable_raw_mode()?;
-    println!();
-    Ok(())
+    ui::run(shared)
 }
