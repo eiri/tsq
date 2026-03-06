@@ -93,46 +93,6 @@ pub fn square_tone(freq: f32, amplitude: f32) -> Voice {
     Box::new((constant(freq) >> poly_square()) * amp_env * 0.1 * amplitude)
 }
 
-pub struct VoicePool {
-    active: Vec<(Voice, f64, f64)>, // voice, elapsed, max_ttl
-}
-
-impl VoicePool {
-    pub fn new() -> Self {
-        Self { active: Vec::new() }
-    }
-
-    pub fn trigger(&mut self, v: Voice, ttl: f64) {
-        self.active.push((v, 0.0, ttl));
-    }
-
-    pub fn render(&mut self, sample_rate: f64) -> f64 {
-        let dt = 1.0 / sample_rate;
-        let mut out = 0.0;
-
-        self.active.retain_mut(|(voice, t, ttl)| {
-            let mut buf = [0.0; 1];
-            voice.tick(&[], &mut buf);
-            out += buf[0];
-            *t += dt;
-            *t < *ttl
-        });
-
-        let voice_count = std::cmp::Ord::max(self.active.len(), 1) as f64;
-        (out as f64 / voice_count.sqrt()).clamp(-1.0, 1.0)
-    }
-
-    pub fn reset(&mut self) {
-        self.active.clear();
-    }
-}
-
-impl Default for VoicePool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,39 +230,5 @@ mod tests {
         let samples = render_n(&mut v, 4410, 44100.0);
         let peak = samples.iter().cloned().fold(0.0, |a, b| a.max(b.abs()));
         assert!(peak <= 1.0, "snare must not exceed unity gain");
-    }
-
-    #[test]
-    fn voice_pool_starts_empty() {
-        let pool = VoicePool::new();
-        assert_eq!(pool.active.len(), 0);
-    }
-
-    #[test]
-    fn voice_pool_default_starts_empty() {
-        let pool = VoicePool::default();
-        assert_eq!(pool.active.len(), 0);
-    }
-
-    #[test]
-    fn voice_pool_render_does_not_panic() {
-        let mut pool = VoicePool::new();
-        pool.trigger(kick(1.0), 0.4);
-        let _ = pool.render(44100.0);
-    }
-
-    #[test]
-    fn voice_pool_evicts_expired_voices() {
-        let mut pool = VoicePool::new();
-        pool.trigger(kick(1.0), 0.4);
-        let sr = 44100.0;
-        for _ in 0..(sr as usize * 3) {
-            pool.render(sr);
-        }
-        assert_eq!(
-            pool.active.len(),
-            0,
-            "voices older than 2 s should be evicted"
-        );
     }
 }
