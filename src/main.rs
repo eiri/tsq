@@ -29,7 +29,7 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
     let channels = config.channels() as usize;
 
     let mut clock = AudioClock::new(sr);
-    let mut pools: [VoicePool; 4] = [
+    let mut tracks: [VoicePool; 4] = [
         VoicePool::new(),
         VoicePool::new(),
         VoicePool::new(),
@@ -42,7 +42,7 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
             {
                 let mut s = shared.lock().unwrap();
                 if s.reset {
-                    pools.iter_mut().for_each(|p| p.reset());
+                    tracks.iter_mut().for_each(|t| t.reset());
                     s.reset = false;
                 }
             }
@@ -55,30 +55,30 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
                 if let Some(step) = clock.advance(bpm) {
                     if playing {
                         if pattern.kick[step] {
-                            pools[0].trigger(kick(1.0), 0.4);
+                            tracks[0].trigger(kick(1.0), 0.4);
                         }
                         if pattern.hihat_closed[step] {
-                            pools[1].trigger(hihat_closed(1.0), 0.3);
+                            tracks[1].trigger(hihat_closed(1.0), 0.3);
                         }
                         if pattern.hihat_open[step] {
-                            pools[2].trigger(hihat_open(1.0), 0.8);
+                            tracks[2].trigger(hihat_open(1.0), 0.8);
                         }
                         if pattern.tone[step] {
                             let (voice, ttl) = match pattern.tone_voice {
                                 ToneVoice::Sine => (tone(TONE_FREQS[step], 1.0), 2.0),
                                 ToneVoice::Square => (square_tone(TONE_FREQS[step], 1.0), 0.5),
                             };
-                            pools[3].trigger(voice, ttl);
+                            tracks[3].trigger(voice, ttl);
                         }
                     }
                     let mut s = shared.lock().unwrap();
                     s.current_step = step;
                 }
 
-                let sample = (pools[0].render(sr)
-                    + pools[1].render(sr)
-                    + pools[2].render(sr)
-                    + pools[3].render(sr)) as f32
+                let sample = (tracks[0].render(sr)
+                    + tracks[1].render(sr)
+                    + tracks[2].render(sr)
+                    + tracks[3].render(sr)) as f32
                     * 0.5;
 
                 for ch in frame.iter_mut() {
