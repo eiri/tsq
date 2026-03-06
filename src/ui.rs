@@ -10,12 +10,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
-use crate::sequencer::{STEPS, SequencerState, SharedState, ToneVoice, random_pattern};
+use crate::sequencer::{HihatVoice, STEPS, SequencerState, SharedState, ToneVoice, random_pattern};
 
 // 1 space + 12 label + 1 space + 8*3 steps + 7 spaces between steps + 2 border cols
 const FRAME_WIDTH: u16 = 47;
 // 4 track rows + 1 empty row + 1 status row + 2 border rows
 const FRAME_HEIGHT: u16 = 8;
+
+const COLOR_HIGHLIGHT: Color = Color::Rgb(255, 160, 100);
+const COLOR_STEP: Color = Color::Rgb(210, 120, 80);
+const COLOR_STEP_ALT: Color = Color::Rgb(135, 79, 54);
+const COLOR_STEP_OFF: Color = Color::DarkGray;
 
 pub fn run(shared: SharedState) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
@@ -98,15 +103,11 @@ fn draw(frame: &mut ratatui::Frame, state: &SequencerState) {
         chunks[0],
     );
     frame.render_widget(
-        track_line(
-            "hh closed:",
-            &state.pattern.hihat_closed,
-            state.current_step,
-        ),
+        track_line("snare:    ", &state.pattern.snare, state.current_step),
         chunks[1],
     );
     frame.render_widget(
-        track_line("hh open:  ", &state.pattern.hihat_open, state.current_step),
+        hihat_line("hihat:    ", &state.pattern.hihat, state.current_step),
         chunks[2],
     );
     frame.render_widget(
@@ -114,18 +115,19 @@ fn draw(frame: &mut ratatui::Frame, state: &SequencerState) {
         chunks[3],
     );
 
-    let voice_name = match state.pattern.tone_voice {
+    let tone_name = match state.pattern.tone_voice {
         ToneVoice::Sine => "sine",
         ToneVoice::Square => "square",
     };
 
+    // ref : ◎ ◉ ○ ● ◯ ⬤
     let status = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" {:.0} BPM", state.bpm),
             Style::default().fg(Color::White),
         ),
         Span::styled(
-            format!("  voice: {voice_name}"),
+            format!("  tone: {tone_name}"),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled("    r", Style::default().fg(Color::Yellow)),
@@ -147,11 +149,49 @@ fn track_line<'a>(label: &'a str, steps: &'a [bool; STEPS], current: usize) -> P
             (_, true) => (
                 "●",
                 Style::default()
-                    .fg(Color::Rgb(255, 160, 100))
+                    .fg(COLOR_HIGHLIGHT)
                     .add_modifier(Modifier::BOLD),
             ),
-            (true, false) => ("●", Style::default().fg(Color::Rgb(210, 120, 80))),
-            (false, false) => ("○", Style::default().fg(Color::DarkGray)),
+            (true, false) => ("●", Style::default().fg(COLOR_STEP)),
+            (false, false) => ("○", Style::default().fg(COLOR_STEP_OFF)),
+        };
+
+        spans.push(Span::styled(text, style));
+        if i < STEPS - 1 {
+            spans.push(Span::raw(" "));
+        }
+    }
+
+    Paragraph::new(Line::from(spans))
+}
+
+// fixme - this needs smth smarter
+fn hihat_line<'a>(
+    label: &'a str,
+    steps: &'a [Option<HihatVoice>; STEPS],
+    current: usize,
+) -> Paragraph<'a> {
+    let mut spans = vec![Span::raw(format!(" {label} "))];
+
+    for (i, step) in steps.iter().enumerate() {
+        let is_current = i == current;
+
+        let (text, style) = match (step, is_current) {
+            (None, true) => (
+                "○",
+                Style::default()
+                    .fg(COLOR_HIGHLIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (_, true) => (
+                "●",
+                Style::default()
+                    .fg(COLOR_HIGHLIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (Some(HihatVoice::Open), false) => ("●", Style::default().fg(COLOR_STEP)),
+            (Some(HihatVoice::Closed), false) => ("●", Style::default().fg(COLOR_STEP_ALT)),
+            (None, false) => ("○", Style::default().fg(COLOR_STEP_OFF)),
         };
 
         spans.push(Span::styled(text, style));

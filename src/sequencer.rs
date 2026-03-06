@@ -9,11 +9,17 @@ pub enum ToneVoice {
     Square,
 }
 
+#[derive(Clone, PartialEq)]
+pub enum HihatVoice {
+    Open,
+    Closed,
+}
+
 #[derive(Clone)]
 pub struct Pattern {
     pub kick: [bool; STEPS],
-    pub hihat_closed: [bool; STEPS],
-    pub hihat_open: [bool; STEPS],
+    pub snare: [bool; STEPS],
+    pub hihat: [Option<HihatVoice>; STEPS],
     pub tone: [bool; STEPS],
     pub tone_voice: ToneVoice,
 }
@@ -22,8 +28,17 @@ impl Default for Pattern {
     fn default() -> Self {
         Self {
             kick: [true, false, false, false, true, false, false, false],
-            hihat_closed: [true, true, true, true, true, true, true, true],
-            hihat_open: [false, false, false, false, false, false, false, true],
+            snare: [false, false, false, false, true, false, false, false],
+            hihat: [
+                None,
+                Some(HihatVoice::Closed),
+                Some(HihatVoice::Open),
+                Some(HihatVoice::Open),
+                None,
+                Some(HihatVoice::Closed),
+                None,
+                Some(HihatVoice::Open),
+            ],
             tone: [true, false, true, false, false, true, false, true],
             tone_voice: ToneVoice::Sine,
         }
@@ -33,8 +48,12 @@ impl Default for Pattern {
 pub fn random_pattern() -> Pattern {
     Pattern {
         kick: std::array::from_fn(|_| fastrand::bool()),
-        hihat_closed: std::array::from_fn(|_| fastrand::bool()),
-        hihat_open: std::array::from_fn(|_| fastrand::bool()),
+        snare: std::array::from_fn(|_| fastrand::bool()),
+        hihat: std::array::from_fn(|_| match fastrand::u8(0..3) {
+            0 => Some(HihatVoice::Open),
+            1 => Some(HihatVoice::Closed),
+            _ => None,
+        }),
         tone: std::array::from_fn(|_| fastrand::bool()),
         tone_voice: if fastrand::bool() {
             ToneVoice::Sine
@@ -111,8 +130,8 @@ mod tests {
     fn default_pattern_has_eight_steps() {
         let p = Pattern::default();
         assert_eq!(p.kick.len(), 8);
-        assert_eq!(p.hihat_closed.len(), 8);
-        assert_eq!(p.hihat_open.len(), 8);
+        assert_eq!(p.snare.len(), 8);
+        assert_eq!(p.hihat.len(), 8);
         assert_eq!(p.tone.len(), 8);
     }
 
@@ -127,9 +146,13 @@ mod tests {
     }
 
     #[test]
-    fn default_pattern_hihat_closed_on_every_step() {
+    fn default_pattern_snare_on_beat_five() {
         let p = Pattern::default();
-        assert!(p.hihat_closed.iter().all(|&v| v));
+        assert!(p.snare[4]);
+        assert!(!p.snare[0]);
+        assert!(!p.snare[1]);
+        assert!(!p.snare[2]);
+        assert!(!p.snare[3]);
     }
 
     #[test]
@@ -204,8 +227,7 @@ mod tests {
         let default = Pattern::default();
         let random = random_pattern();
         let same = default.kick == random.kick
-            && default.hihat_closed == random.hihat_closed
-            && default.hihat_open == random.hihat_open
+            && default.snare == random.snare
             && default.tone == random.tone;
         assert!(!same, "random pattern should differ from default");
     }

@@ -5,8 +5,8 @@ mod voices;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use sequencer::{AudioClock, STEPS, SharedState, ToneVoice, new_shared_state};
-use voices::{Voice, hihat_closed, hihat_open, kick, square_tone, tone};
+use sequencer::{AudioClock, HihatVoice, STEPS, SharedState, ToneVoice, new_shared_state};
+use voices::{Voice, hihat_closed, hihat_open, kick, snare, square_tone, tone};
 
 // C major scale from middle C (C4) to C5, one note per step
 const TONE_FREQS: [f32; STEPS] = [
@@ -64,11 +64,15 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
                         if pattern.kick[step] {
                             tracks[0].push((kick(1.0), 0.4));
                         }
-                        if pattern.hihat_closed[step] {
-                            tracks[1].push((hihat_closed(1.0), 0.3));
+                        if pattern.snare[step] {
+                            tracks[1].push((snare(0.4), 0.3));
                         }
-                        if pattern.hihat_open[step] {
-                            tracks[2].push((hihat_open(1.0), 0.8));
+                        if let Some(hv) = &pattern.hihat[step] {
+                            let voice = match hv {
+                                HihatVoice::Open => hihat_open(1.0),
+                                HihatVoice::Closed => hihat_closed(1.0),
+                            };
+                            tracks[2].push((voice, 0.8));
                         }
                         if pattern.tone[step] {
                             let (voice, ttl) = match pattern.tone_voice {

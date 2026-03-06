@@ -37,7 +37,6 @@ fn hihat(decay: f64, amplitude: f32) -> Voice {
     Box::new(noise() >> (highpass_hz(7000.0, 0.8) * amp_env * 0.35 * amplitude))
 }
 
-#[allow(dead_code)]
 pub fn snare(amplitude: f32) -> Voice {
     let amp_env = envelope(|t: f64| {
         if t < 0.002 {
