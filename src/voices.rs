@@ -46,16 +46,16 @@ pub fn snare(amplitude: f32) -> Voice {
             (-(t - 0.002) * 22.0).exp()
         }
     });
-    let body = sine_hz(180.0_f32);
+    let body = sine_hz(180.0);
     let crack = noise() >> highpass_hz(2000.0, 0.7);
     Box::new((body + crack) * amp_env * 0.5 * amplitude)
 }
 
-pub fn tone(freq: f64, amplitude: f32) -> Voice {
+pub fn tone(freq: f32, amplitude: f32) -> Voice {
     let amp_env = envelope(move |t: f64| {
-        let attack = 0.01_f64;
-        let decay = 0.08_f64;
-        let sustain = 0.45_f64;
+        let attack = 0.01;
+        let decay = 0.08;
+        let sustain = 0.45;
         let sustain_end = attack + decay + 0.09;
 
         if t < attack {
@@ -69,14 +69,14 @@ pub fn tone(freq: f64, amplitude: f32) -> Voice {
         }
     });
 
-    Box::new(sine_hz(freq as f32) * amp_env * 0.4 * amplitude)
+    Box::new(sine_hz(freq) * amp_env * 0.4 * amplitude)
 }
 
-pub fn square_tone(freq: f64, amplitude: f32) -> Voice {
+pub fn square_tone(freq: f32, amplitude: f32) -> Voice {
     let amp_env = envelope(move |t: f64| {
-        let attack = 0.005_f64;
-        let decay = 0.05_f64;
-        let sustain = 0.6_f64;
+        let attack = 0.005;
+        let decay = 0.05;
+        let sustain = 0.6;
         let sustain_end = attack + decay + 0.09;
 
         if t < attack {
@@ -90,7 +90,7 @@ pub fn square_tone(freq: f64, amplitude: f32) -> Voice {
         }
     });
 
-    Box::new((constant(freq as f32) >> poly_square()) * amp_env * 0.1 * amplitude)
+    Box::new((constant(freq) >> poly_square()) * amp_env * 0.1 * amplitude)
 }
 
 pub struct VoicePool {
@@ -108,18 +108,18 @@ impl VoicePool {
 
     pub fn render(&mut self, sample_rate: f64) -> f64 {
         let dt = 1.0 / sample_rate;
-        let mut out = 0.0_f64;
+        let mut out = 0.0;
 
         self.active.retain_mut(|(voice, t, ttl)| {
-            let mut buf = [0.0_f32; 1];
+            let mut buf = [0.0; 1];
             voice.tick(&[], &mut buf);
-            out += buf[0] as f64;
+            out += buf[0];
             *t += dt;
             *t < *ttl
         });
 
         let voice_count = std::cmp::Ord::max(self.active.len(), 1) as f64;
-        (out / voice_count.sqrt()).clamp(-1.0, 1.0)
+        (out as f64 / voice_count.sqrt()).clamp(-1.0, 1.0)
     }
 
     pub fn reset(&mut self) {
@@ -140,7 +140,7 @@ mod tests {
     fn render_n(voice: &mut Voice, n: usize, sr: f64) -> Vec<f32> {
         (0..n)
             .map(|_| {
-                let mut buf = [0.0_f32; 1];
+                let mut buf = [0.0; 1];
                 voice.tick(&[], &mut buf);
                 let _ = sr;
                 buf[0]
@@ -161,7 +161,7 @@ mod tests {
         let mut v = kick(1.0);
         render_n(&mut v, 44100, 44100.0);
         let tail: Vec<f32> = render_n(&mut v, 256, 44100.0);
-        let max_amp = tail.iter().cloned().fold(0.0_f32, f32::max);
+        let max_amp = tail.iter().cloned().fold(0.0, f32::max);
         assert!(max_amp < 0.01, "kick tail should be near silent after 1 s");
     }
 
@@ -171,7 +171,7 @@ mod tests {
         let energy = |mut v: Voice, frames: usize| -> f32 {
             (0..frames)
                 .map(|_| {
-                    let mut buf = [0.0_f32; 1];
+                    let mut buf = [0.0; 1];
                     v.tick(&[], &mut buf);
                     buf[0] * buf[0]
                 })
@@ -191,7 +191,7 @@ mod tests {
     fn tone_output_is_within_unity() {
         let mut v = tone(440.0, 1.0);
         let samples = render_n(&mut v, 4410, 44100.0);
-        let peak = samples.iter().cloned().fold(0.0_f32, |a, b| a.max(b.abs()));
+        let peak = samples.iter().cloned().fold(0.0, |a, b| a.max(b.abs()));
         assert!(peak <= 1.0, "tone must not exceed unity gain");
     }
 
@@ -219,7 +219,7 @@ mod tests {
     fn square_tone_output_is_within_unity() {
         let mut v = square_tone(440.0, 1.0);
         let samples = render_n(&mut v, 4410, 44100.0);
-        let peak = samples.iter().cloned().fold(0.0_f32, |a, b| a.max(b.abs()));
+        let peak = samples.iter().cloned().fold(0.0, |a, b| a.max(b.abs()));
         assert!(peak <= 1.0, "square_tone must not exceed unity gain");
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let mut v = square_tone(440.0, 1.0);
         render_n(&mut v, 44100, 44100.0);
         let tail = render_n(&mut v, 256, 44100.0);
-        let max_amp = tail.iter().cloned().fold(0.0_f32, f32::max);
+        let max_amp = tail.iter().cloned().fold(0.0, f32::max);
         assert!(
             max_amp < 0.01,
             "square_tone tail should be near silent after 1 s"
@@ -260,7 +260,7 @@ mod tests {
         let mut v = snare(1.0);
         render_n(&mut v, 44100, 44100.0);
         let tail = render_n(&mut v, 256, 44100.0);
-        let max_amp = tail.iter().cloned().fold(0.0_f32, f32::max);
+        let max_amp = tail.iter().cloned().fold(0.0, f32::max);
         assert!(max_amp < 0.01, "snare tail should be near silent after 1 s");
     }
 
@@ -268,7 +268,7 @@ mod tests {
     fn snare_output_is_within_unity() {
         let mut v = snare(1.0);
         let samples = render_n(&mut v, 4410, 44100.0);
-        let peak = samples.iter().cloned().fold(0.0_f32, |a, b| a.max(b.abs()));
+        let peak = samples.iter().cloned().fold(0.0, |a, b| a.max(b.abs()));
         assert!(peak <= 1.0, "snare must not exceed unity gain");
     }
 

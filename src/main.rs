@@ -10,7 +10,7 @@ use sequencer::{AudioClock, STEPS, SharedState, ToneVoice, new_shared_state, ran
 use voices::{VoicePool, hihat_closed, hihat_open, kick, square_tone, tone};
 
 // C major scale from middle C (C4) to C5, one note per step
-const TONE_FREQS: [f64; STEPS] = [
+const TONE_FREQS: [f32; STEPS] = [
     261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
 ];
 
