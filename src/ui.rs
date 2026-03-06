@@ -142,14 +142,16 @@ fn track_line<'a>(label: &'a str, steps: &'a [bool; STEPS], current: usize) -> P
 
     for (i, &active) in steps.iter().enumerate() {
         let is_current = i == current;
-        let text = if active { "[x]" } else { "[ ]" };
 
-        let style = match (active, is_current) {
-            (_, true) => Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-            (true, false) => Style::default().fg(Color::Green),
-            (false, false) => Style::default().fg(Color::DarkGray),
+        let (text, style) = match (active, is_current) {
+            (_, true) => (
+                "●",
+                Style::default()
+                    .fg(Color::Rgb(255, 160, 100))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            (true, false) => ("●", Style::default().fg(Color::Rgb(210, 120, 80))),
+            (false, false) => ("○", Style::default().fg(Color::DarkGray)),
         };
 
         spans.push(Span::styled(text, style));
