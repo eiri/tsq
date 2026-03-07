@@ -11,8 +11,8 @@ A toy 8-step sequencer.
 ## Tracks
 
 - kick
-- hi-hat closed
-- hi-hat open
+- snare
+- open/closed hi-hat
 - tone (sine or square)
 
 The tone track plays notes from the C major scale (C4–C5), one per step.
@@ -21,6 +21,7 @@ The tone track plays notes from the C major scale (C4–C5), one per step.
 
 | Key | Action |
 |-----|--------|
+| `i` | choose instrument track |
 | `r` | randomize pattern |
 | `q` | quit |
 
