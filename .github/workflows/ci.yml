@@ -53,4 +53,4 @@ jobs:
         run: cargo test --verbose
 
       - name: cargo lint
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --no-deps --all-targets --all-features
