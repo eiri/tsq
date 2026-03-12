@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libxcb-xfixes0-dev \
+            libxcb-shape0-dev \
+            libxcb-render0-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libgl1-mesa-dev \
+            pkg-config
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo format
+        run: cargo fmt --all -- --check
+
+      - name: cargo build
+        run: cargo build --verbose
+
+      - name: cargo test
+        run: cargo test --verbose
+
+      - name: cargo lint
+        run: cargo clippy --all-targets --all-features

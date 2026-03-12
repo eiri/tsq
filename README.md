@@ -1,4 +1,6 @@
 # tsq
+[![CI](https://github.com/eiri/tsq/actions/workflows/ci.yml/badge.svg)](https://github.com/eiri/tsq/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/eiri/tsq)](LICENSE)
 
 A toy 8-step sequencer.
 
