@@ -28,15 +28,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev \
-            libxkbcommon-dev \
+            libudev-dev \
+            pkg-config \
             libwayland-dev \
-            libxcb-xfixes0-dev \
-            libxcb-shape0-dev \
-            libxcb-render0-dev \
-            libxcb1-dev \
-            libx11-dev \
+            libx11-xcb-dev \
+            libxcb-dri2-0-dev \
             libgl1-mesa-dev \
-            pkg-config
+            libxcb-icccm4-dev \
+            libxcursor-dev \
+            libxcb-{render,shape,xfixes}0-dev
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
