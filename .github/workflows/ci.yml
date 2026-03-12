@@ -36,7 +36,9 @@ jobs:
             libgl1-mesa-dev \
             libxcb-icccm4-dev \
             libxcursor-dev \
-            libxcb-{render,shape,xfixes}0-dev
+            libxcb-{render,shape,xfixes}0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
