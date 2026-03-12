@@ -1,4 +1,6 @@
+mod pip;
 mod sequencer;
+mod step_dot;
 mod ui;
 mod voices;
 
@@ -108,5 +110,5 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
 fn main() -> Result<()> {
     let shared = new_shared_state();
     let _stream = build_audio_stream(shared.clone())?;
-    ui::run(shared)
+    ui::run(shared).map_err(|e| anyhow::anyhow!("{e:?}"))
 }

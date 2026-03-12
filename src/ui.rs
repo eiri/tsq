@@ -1,282 +1,279 @@
-use std::io;
+use vizia::prelude::*;
 
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crate::pip::{Pip, PipState};
+use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
+use crate::step_dot::{StepDot, StepDotState};
 
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
-
-use crate::sequencer::{HihatVoice, STEPS, SequencerState, SharedState, random_pattern};
-
-const FRAME_WIDTH: u16 = 12;
-const FRAME_HEIGHT: u16 = 8;
-
-const COLOR_HIGHLIGHT: Color = Color::Rgb(255, 160, 100);
-const COLOR_STEP: Color = Color::Rgb(210, 120, 80);
-const COLOR_STEP_ALT: Color = Color::Rgb(135, 79, 54);
-const COLOR_STEP_OFF: Color = Color::DarkGray;
-const COLOR_BTN: Color = Color::Rgb(0, 168, 150);
-const COLOR_BTN_PRESSED: Color = Color::Rgb(0, 90, 80);
-
-const TRACK_NAMES: [&str; 4] = ["kick", "snare", "hihat", "tone"];
 const NUM_TRACKS: usize = 4;
 const HALF: usize = STEPS / 2;
 
-pub fn run(shared: SharedState) -> Result<()> {
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = event_loop(&mut terminal, shared);
-
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
-
-    result
-}
-
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    shared: SharedState,
-) -> Result<()> {
-    let mut selected_track: usize = 0;
-    let mut btn_l_at: Option<std::time::Instant> = None;
-    let mut btn_r_at: Option<std::time::Instant> = None;
-
-    const PRESS_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
-
-    loop {
-        let now = std::time::Instant::now();
-        let btn_l_pressed = btn_l_at.map_or(false, |t| now.duration_since(t) < PRESS_DURATION);
-        let btn_r_pressed = btn_r_at.map_or(false, |t| now.duration_since(t) < PRESS_DURATION);
-
-        let state = shared.lock().unwrap().clone();
-        terminal.draw(|f| draw(f, &state, selected_track, btn_l_pressed, btn_r_pressed))?;
-
-        if event::poll(std::time::Duration::from_millis(16))?
-            && let Event::Key(key) = event::read()?
-        {
-            match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Char('r') => {
-                    let mut s = shared.lock().unwrap();
-                    s.pattern = random_pattern();
-                    s.reset = true;
-                    btn_l_at = Some(std::time::Instant::now());
-                }
-                KeyCode::Char('i') => {
-                    selected_track = (selected_track + 1) % NUM_TRACKS;
-                    btn_r_at = Some(std::time::Instant::now());
-                }
-                _ => {}
-            }
-        }
+const STYLE: &str = r#"
+    .round-button {
+        size: 48px;
+        corner-radius: 50%;
+        border: 7px solid #900;
+        background-image: linear-gradient(to top right, #f00 10%, #c00 60%, #fff);
     }
-    Ok(())
-}
 
-fn fixed_rect(area: Rect) -> Rect {
-    Rect {
-        x: area.x,
-        y: area.y,
-        width: FRAME_WIDTH.min(area.width),
-        height: FRAME_HEIGHT.min(area.height),
+    .round-button:active, .round-button:checked {
+        background-image: linear-gradient(to top right, #d00 10%, #a00 92%, #ddd);
     }
-}
 
-fn track_pips(selected: usize) -> String {
-    (0..NUM_TRACKS)
-        .map(|i| if i == selected { '▾' } else { '▿' })
-        .collect()
-}
+    .seq {
+        background-color: #ffffe0;
+        border: 10px solid #900;
+        outline: 6px #ffffe0;
+        corner-radius: 0px;
+        shadow:
+            0px 0px 6px 8px #eeeed0,
+            0px 0px 6px 11px #ddddc0,
+            0px 0px 6px 14px #ccccb0,
+            0px 0px 6px 17px #bbbba1,
+            0px 0px 6px 20px #abab92;
+    }
+"#;
 
-fn draw(
-    frame: &mut ratatui::Frame,
-    state: &SequencerState,
+#[derive(Lens)]
+struct AppState {
     selected_track: usize,
+    current_step: usize,
+    kick: Vec<bool>,
+    snare: Vec<bool>,
+    hihat: Vec<Option<HihatVoice>>,
+    tone: Vec<bool>,
     btn_l_pressed: bool,
     btn_r_pressed: bool,
+    shared: SharedState,
+}
+
+impl AppState {
+    fn sync_from_shared(&mut self) {
+        let s = self.shared.lock().unwrap();
+        self.current_step = s.current_step;
+        self.kick = s.pattern.kick.to_vec();
+        self.snare = s.pattern.snare.to_vec();
+        self.hihat = s.pattern.hihat.to_vec();
+        self.tone = s.pattern.tone.to_vec();
+    }
+}
+
+#[derive(Debug)]
+enum AppEvent {
+    Tick,
+    Randomize,
+    NextTrack,
+}
+
+impl Model for AppState {
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|e: &AppEvent, _| match e {
+            AppEvent::Tick => {
+                self.sync_from_shared();
+            }
+            AppEvent::Randomize => {
+                {
+                    let mut s = self.shared.lock().unwrap();
+                    s.pattern = random_pattern();
+                    s.reset = true;
+                }
+                self.sync_from_shared();
+            }
+            AppEvent::NextTrack => {
+                self.selected_track = (self.selected_track + 1) % NUM_TRACKS;
+            }
+        });
+
+        event.map(|e: &WindowEvent, _| {
+            if let WindowEvent::KeyUp(code, _) = e {
+                match code {
+                    Code::KeyT => self.btn_l_pressed = false,
+
+                    Code::KeyR => self.btn_r_pressed = false,
+                    _ => {}
+                }
+            }
+            if let WindowEvent::KeyDown(code, _) = e {
+                match code {
+                    Code::KeyT => {
+                        self.btn_l_pressed = true;
+                        cx.emit(AppEvent::NextTrack);
+                    }
+                    Code::KeyR => {
+                        self.btn_r_pressed = true;
+                        cx.emit(AppEvent::Randomize);
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+
+fn step_color_bool(active: bool, is_current: bool) -> StepDotState {
+    match (active, is_current) {
+        (_, true) => StepDotState::On,
+        (true, false) => StepDotState::Dim,
+        (false, false) => StepDotState::Off,
+    }
+}
+
+fn step_color_hihat(step: &Option<HihatVoice>, is_current: bool) -> StepDotState {
+    match (step, is_current) {
+        (_, true) => StepDotState::On,
+        (Some(HihatVoice::Open), false) => StepDotState::Dim,
+        (Some(HihatVoice::Closed), false) => StepDotState::HalfDim,
+        (None, false) => StepDotState::Off,
+    }
+}
+
+fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::ops::Range<usize>) {
+    HStack::new(cx, move |cx| {
+        for i in range {
+            let step_dot_state = step_color_bool(steps[i], i == current);
+            StepDot::new(cx, step_dot_state)
+                .width(Pixels(18.0))
+                .height(Pixels(18.0));
+        }
+    })
+    .height(Pixels(36.0))
+    .alignment(Alignment::Center)
+    .horizontal_gap(Pixels(36.0));
+}
+
+fn hihat_step_row(
+    cx: &mut Context,
+    steps: &[Option<HihatVoice>],
+    current: usize,
+    range: std::ops::Range<usize>,
 ) {
-    let area = fixed_rect(frame.area());
-
-    let title = format!(" {} ", TRACK_NAMES[selected_track]);
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(title);
-
-    let inner = outer.inner(area);
-
-    frame.render_widget(outer, area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!("  {}", track_pips(selected_track)),
-            Style::default().fg(COLOR_STEP),
-        )])),
-        chunks[0],
-    );
-
-    match selected_track {
-        0 => {
-            let (top, bot) = bool_half_lines(&state.pattern.kick, state.current_step);
-            frame.render_widget(top, chunks[2]);
-            frame.render_widget(bot, chunks[3]);
+    HStack::new(cx, move |cx| {
+        for i in range {
+            let step_dot_state = step_color_hihat(&steps[i], i == current);
+            StepDot::new(cx, step_dot_state)
+                .width(Pixels(18.0))
+                .height(Pixels(18.0));
         }
-        1 => {
-            let (top, bot) = bool_half_lines(&state.pattern.snare, state.current_step);
-            frame.render_widget(top, chunks[2]);
-            frame.render_widget(bot, chunks[3]);
-        }
-        2 => {
-            let (top, bot) = hihat_half_lines(&state.pattern.hihat, state.current_step);
-            frame.render_widget(top, chunks[2]);
-            frame.render_widget(bot, chunks[3]);
-        }
-        3 => {
-            let (top, bot) = bool_half_lines(&state.pattern.tone, state.current_step);
-            frame.render_widget(top, chunks[2]);
-            frame.render_widget(bot, chunks[3]);
-        }
-        _ => unreachable!(),
-    }
-
-    let controls = Layout::default()
-        .direction(Direction::Horizontal)
-        .horizontal_margin(1)
-        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[5]);
-
-    // ref : ◎ ◉ ○ ● ◯ ⬤ ▢ ▬ ▭ ▰ ▱
-    let color_l = if btn_l_pressed {
-        COLOR_BTN_PRESSED
-    } else {
-        COLOR_BTN
-    };
-    let color_r = if btn_r_pressed {
-        COLOR_BTN_PRESSED
-    } else {
-        COLOR_BTN
-    };
-
-    let controls_l = Paragraph::new(
-        Line::from(vec![Span::styled("◉", Style::default().fg(color_l))])
-            .alignment(Alignment::Left),
-    );
-    let controls_r = Paragraph::new(
-        Line::from(vec![Span::styled("◉", Style::default().fg(color_r))])
-            .alignment(Alignment::Right),
-    );
-
-    frame.render_widget(controls_l, controls[0]);
-    frame.render_widget(controls_r, controls[1]);
+    })
+    .height(Pixels(36.0))
+    .alignment(Alignment::Center)
+    .horizontal_gap(Pixels(36.0));
 }
 
-fn bool_step_spans(
-    steps: &[bool; STEPS],
-    current: usize,
-    range: std::ops::Range<usize>,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let last = range.end - 1;
+pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
+    let shared_clone = shared.clone();
 
-    for i in range {
-        let active = steps[i];
-        let is_current = i == current;
+    Application::new(move |cx| {
+        cx.add_stylesheet(STYLE).expect("loads the style");
 
-        let (text, style) = match (active, is_current) {
-            (_, true) => (
-                "●",
-                Style::default()
-                    .fg(COLOR_HIGHLIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            (true, false) => ("●", Style::default().fg(COLOR_STEP)),
-            (false, false) => ("○", Style::default().fg(COLOR_STEP_OFF)),
+        let initial_state = {
+            let s = shared_clone.lock().unwrap();
+            AppState {
+                selected_track: 0,
+                current_step: s.current_step,
+                kick: s.pattern.kick.to_vec(),
+                snare: s.pattern.snare.to_vec(),
+                hihat: s.pattern.hihat.to_vec(),
+                tone: s.pattern.tone.to_vec(),
+                btn_l_pressed: false,
+                btn_r_pressed: false,
+                shared: shared_clone.clone(),
+            }
         };
 
-        spans.push(Span::styled(text, style));
-        if i < last {
-            spans.push(Span::raw(" "));
-        }
-    }
-    spans
-}
+        initial_state.build(cx);
 
-fn bool_half_lines(
-    steps: &[bool; STEPS],
-    current: usize,
-) -> (Paragraph<'static>, Paragraph<'static>) {
-    let top = Paragraph::new(Line::from(bool_step_spans(steps, current, 0..HALF)).centered());
-    let bot = Paragraph::new(Line::from(bool_step_spans(steps, current, HALF..STEPS)).centered());
-    (top, bot)
-}
+        let timer = cx.add_timer(std::time::Duration::from_millis(16), None, |cx, _| {
+            cx.emit(AppEvent::Tick);
+        });
+        cx.start_timer(timer);
 
-fn hihat_step_spans(
-    steps: &[Option<HihatVoice>; STEPS],
-    current: usize,
-    range: std::ops::Range<usize>,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let last = range.end - 1;
+        cx.add_stylesheet(include_style!("")).ok();
 
-    for i in range {
-        let step = &steps[i];
-        let is_current = i == current;
+        HStack::new(cx, |cx| {
+            AppState::selected_track.get(cx);
 
-        let (text, style) = match (step, is_current) {
-            (None, true) => (
-                "○",
-                Style::default()
-                    .fg(COLOR_HIGHLIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            (_, true) => (
-                "●",
-                Style::default()
-                    .fg(COLOR_HIGHLIGHT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            (Some(HihatVoice::Open), false) => ("●", Style::default().fg(COLOR_STEP)),
-            (Some(HihatVoice::Closed), false) => ("●", Style::default().fg(COLOR_STEP_ALT)),
-            (None, false) => ("○", Style::default().fg(COLOR_STEP_OFF)),
-        };
+            VStack::new(cx, |cx| {
+                Binding::new(cx, AppState::selected_track, |cx, selected_lens| {
+                    let selected = selected_lens.get(cx);
+                    HStack::new(cx, |cx| {
+                        for i in 0..NUM_TRACKS {
+                            let state = if i == selected {
+                                PipState::On
+                            } else {
+                                PipState::Off
+                            };
+                            Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
+                        }
+                    })
+                    .height(Pixels(64.0))
+                    .alignment(Alignment::Center)
+                    .horizontal_gap(Pixels(9.0));
+                });
 
-        spans.push(Span::styled(text, style));
-        if i < last {
-            spans.push(Span::raw(" "));
-        }
-    }
-    spans
-}
+                Button::new(cx, |cx| Label::new(cx, " "))
+                    .checked(AppState::btn_l_pressed)
+                    .on_press(|ex| ex.emit(AppEvent::NextTrack))
+                    .class("round-button");
 
-fn hihat_half_lines(
-    steps: &[Option<HihatVoice>; STEPS],
-    current: usize,
-) -> (Paragraph<'static>, Paragraph<'static>) {
-    let top = Paragraph::new(Line::from(hihat_step_spans(steps, current, 0..HALF)).centered());
-    let bot = Paragraph::new(Line::from(hihat_step_spans(steps, current, HALF..STEPS)).centered());
-    (top, bot)
+                Label::new(cx, "TRACK");
+            })
+            .alignment(Alignment::BottomCenter)
+            .gap(Pixels(9.0))
+            .padding_bottom(Pixels(9.0));
+
+            VStack::new(cx, |cx| {
+                Binding::new(cx, AppState::current_step, move |cx, _| {
+                    let current = AppState::current_step.get(cx);
+                    let selected = AppState::selected_track.get(cx);
+                    match selected {
+                        0 => {
+                            let kick = AppState::kick.get(cx);
+                            bool_step_row(cx, &kick, current, 0..HALF);
+                            bool_step_row(cx, &kick, current, HALF..STEPS);
+                        }
+                        1 => {
+                            let snare = AppState::snare.get(cx);
+                            bool_step_row(cx, &snare, current, 0..HALF);
+                            bool_step_row(cx, &snare, current, HALF..STEPS);
+                        }
+                        2 => {
+                            let hihat = AppState::hihat.get(cx);
+                            hihat_step_row(cx, &hihat, current, 0..HALF);
+                            hihat_step_row(cx, &hihat, current, HALF..STEPS);
+                        }
+                        3 => {
+                            let tone = AppState::tone.get(cx);
+                            bool_step_row(cx, &tone, current, 0..HALF);
+                            bool_step_row(cx, &tone, current, HALF..STEPS);
+                        }
+                        _ => unreachable!(),
+                    }
+                });
+            })
+            .width(Percentage(50.0))
+            .height(Percentage(70.0))
+            .alignment(Alignment::Center)
+            .vertical_gap(Pixels(18.0))
+            .class("seq");
+
+            VStack::new(cx, |cx| {
+                Button::new(cx, |cx| Label::new(cx, " "))
+                    .checked(AppState::btn_r_pressed)
+                    .on_press(|ex| ex.emit(AppEvent::Randomize))
+                    .class("round-button");
+                Label::new(cx, "RAND");
+            })
+            .alignment(Alignment::BottomCenter)
+            .gap(Pixels(9.0))
+            .padding_bottom(Pixels(9.0));
+        })
+        .alignment(Alignment::Center)
+        .background_color(Color::lightyellow())
+        .border_color(Color::darkred())
+        .border_width(Pixels(10.0))
+        .corner_radius(Pixels(6.0));
+    })
+    .title("tsq")
+    .inner_size((800, 343))
+    .run()
 }
