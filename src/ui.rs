@@ -1,6 +1,7 @@
 use vizia::prelude::*;
 
 use crate::pip::{Pip, PipState};
+use crate::round_button::RoundButton;
 use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
 use crate::step_dot::{StepDot, StepDotState};
 
@@ -8,17 +9,6 @@ const NUM_TRACKS: usize = 4;
 const HALF: usize = STEPS / 2;
 
 const STYLE: &str = r#"
-    .round-button {
-        size: 48px;
-        corner-radius: 50%;
-        border: 7px solid #900;
-        background-image: linear-gradient(to top right, #f00 10%, #c00 60%, #fff);
-    }
-
-    .round-button:active, .round-button:checked {
-        background-image: linear-gradient(to top right, #d00 10%, #a00 92%, #ddd);
-    }
-
     .seq {
         background-color: #ffffe0;
         border: 10px solid #900;
@@ -41,8 +31,6 @@ struct AppState {
     snare: Vec<bool>,
     hihat: Vec<Option<HihatVoice>>,
     tone: Vec<bool>,
-    btn_l_pressed: bool,
-    btn_r_pressed: bool,
     shared: SharedState,
 }
 
@@ -65,7 +53,7 @@ enum AppEvent {
 }
 
 impl Model for AppState {
-    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+    fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
         event.map(|e: &AppEvent, _| match e {
             AppEvent::Tick => {
                 self.sync_from_shared();
@@ -80,30 +68,6 @@ impl Model for AppState {
             }
             AppEvent::NextTrack => {
                 self.selected_track = (self.selected_track + 1) % NUM_TRACKS;
-            }
-        });
-
-        event.map(|e: &WindowEvent, _| {
-            if let WindowEvent::KeyUp(code, _) = e {
-                match code {
-                    Code::KeyT => self.btn_l_pressed = false,
-
-                    Code::KeyR => self.btn_r_pressed = false,
-                    _ => {}
-                }
-            }
-            if let WindowEvent::KeyDown(code, _) = e {
-                match code {
-                    Code::KeyT => {
-                        self.btn_l_pressed = true;
-                        cx.emit(AppEvent::NextTrack);
-                    }
-                    Code::KeyR => {
-                        self.btn_r_pressed = true;
-                        cx.emit(AppEvent::Randomize);
-                    }
-                    _ => {}
-                }
             }
         });
     }
@@ -174,8 +138,6 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 snare: s.pattern.snare.to_vec(),
                 hihat: s.pattern.hihat.to_vec(),
                 tone: s.pattern.tone.to_vec(),
-                btn_l_pressed: false,
-                btn_r_pressed: false,
                 shared: shared_clone.clone(),
             }
         };
@@ -210,15 +172,9 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                     .horizontal_gap(Pixels(9.0));
                 });
 
-                Button::new(cx, |cx| Label::new(cx, " "))
-                    .checked(AppState::btn_l_pressed)
-                    .on_press(|ex| ex.emit(AppEvent::NextTrack))
-                    .class("round-button");
-
-                Label::new(cx, "TRACK");
+                RoundButton::build(cx, "TRACK", Code::KeyT, |ex| ex.emit(AppEvent::NextTrack));
             })
             .alignment(Alignment::BottomCenter)
-            .gap(Pixels(9.0))
             .padding_bottom(Pixels(9.0));
 
             VStack::new(cx, |cx| {
@@ -257,14 +213,9 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             .class("seq");
 
             VStack::new(cx, |cx| {
-                Button::new(cx, |cx| Label::new(cx, " "))
-                    .checked(AppState::btn_r_pressed)
-                    .on_press(|ex| ex.emit(AppEvent::Randomize))
-                    .class("round-button");
-                Label::new(cx, "RAND");
+                RoundButton::build(cx, "RAND", Code::KeyR, |ex| ex.emit(AppEvent::Randomize));
             })
             .alignment(Alignment::BottomCenter)
-            .gap(Pixels(9.0))
             .padding_bottom(Pixels(9.0));
         })
         .alignment(Alignment::Center)
