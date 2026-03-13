@@ -175,7 +175,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 RoundButton::build(cx, "TRACK", Code::KeyT, |ex| ex.emit(AppEvent::NextTrack));
             })
             .alignment(Alignment::BottomCenter)
-            .padding_bottom(Pixels(9.0));
+            .padding_bottom(Pixels(32.0));
 
             VStack::new(cx, |cx| {
                 Binding::new(cx, AppState::current_step, move |cx, _| {
@@ -216,7 +216,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 RoundButton::build(cx, "RAND", Code::KeyR, |ex| ex.emit(AppEvent::Randomize));
             })
             .alignment(Alignment::BottomCenter)
-            .padding_bottom(Pixels(9.0));
+            .padding_bottom(Pixels(32.0));
         })
         .alignment(Alignment::Center)
         .background_color(Color::lightyellow())
@@ -225,6 +225,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         .corner_radius(Pixels(6.0));
     })
     .title("tsq")
-    .inner_size((800, 343))
+    .inner_size((720, 360))
+    .resizable(false)
     .run()
 }
