@@ -1,9 +1,7 @@
-mod pip;
-mod round_button;
 mod sequencer;
-mod step_dot;
 mod ui;
 mod voices;
+mod widgets;
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

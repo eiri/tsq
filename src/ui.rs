@@ -1,9 +1,7 @@
 use vizia::prelude::*;
 
-use crate::pip::{Pip, PipState};
-use crate::round_button::RoundButton;
 use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
-use crate::step_dot::{StepDot, StepDotState};
+use crate::widgets::{Pip, PipState, RoundButton, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
 const HALF: usize = STEPS / 2;
