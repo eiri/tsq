@@ -41,8 +41,15 @@ jobs:
             libfontconfig1-dev \
             libfreetype-dev
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-latest-cargo-
 
       - name: cargo format
         run: cargo fmt --all -- --check
