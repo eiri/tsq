@@ -1,7 +1,7 @@
 use vizia::prelude::*;
 
 use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
-use crate::widgets::{Pip, PipState, RoundButton, StepDot, StepDotState};
+use crate::widgets::{EllipseButton, Pip, PipState, RoundButton, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
 const HALF: usize = STEPS / 2;
@@ -29,6 +29,7 @@ struct AppState {
     snare: Vec<bool>,
     hihat: Vec<Option<HihatVoice>>,
     tone: Vec<bool>,
+    playing: bool,
     shared: SharedState,
 }
 
@@ -40,6 +41,7 @@ impl AppState {
         self.snare = s.pattern.snare.to_vec();
         self.hihat = s.pattern.hihat.to_vec();
         self.tone = s.pattern.tone.to_vec();
+        self.playing = s.playing;
     }
 }
 
@@ -48,6 +50,7 @@ enum AppEvent {
     Tick,
     Randomize,
     NextTrack,
+    TogglePlay,
 }
 
 impl Model for AppState {
@@ -66,6 +69,16 @@ impl Model for AppState {
             }
             AppEvent::NextTrack => {
                 self.selected_track = (self.selected_track + 1) % NUM_TRACKS;
+            }
+            AppEvent::TogglePlay => {
+                {
+                    let mut s = self.shared.lock().unwrap();
+                    s.playing = !s.playing;
+                    if !s.playing {
+                        s.reset = true;
+                    }
+                }
+                self.sync_from_shared();
             }
         });
     }
@@ -136,6 +149,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 snare: s.pattern.snare.to_vec(),
                 hihat: s.pattern.hihat.to_vec(),
                 tone: s.pattern.tone.to_vec(),
+                playing: s.playing,
                 shared: shared_clone.clone(),
             }
         };
@@ -173,7 +187,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 RoundButton::build(cx, "TRACK", Code::KeyT, |ex| ex.emit(AppEvent::NextTrack));
             })
             .alignment(Alignment::BottomCenter)
-            .padding_bottom(Pixels(32.0));
+            .padding_bottom(Pixels(50.0));
 
             VStack::new(cx, |cx| {
                 Binding::new(cx, AppState::current_step, move |cx, _| {
@@ -211,9 +225,11 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             .class("seq");
 
             VStack::new(cx, |cx| {
+                EllipseButton::build(cx, "PLAY", Code::KeyP, |ex| ex.emit(AppEvent::TogglePlay));
                 RoundButton::build(cx, "RAND", Code::KeyR, |ex| ex.emit(AppEvent::Randomize));
             })
             .alignment(Alignment::BottomCenter)
+            .vertical_gap(Pixels(12.0))
             .padding_bottom(Pixels(32.0));
         })
         .alignment(Alignment::Center)

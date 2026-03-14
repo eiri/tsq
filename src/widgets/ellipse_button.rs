@@ -2,48 +2,49 @@ use std::sync::Arc;
 use vizia::prelude::*;
 
 const STYLE: &str = r#"
-    .round-button {
-        size: 48px;
+    .ellipse-button {
+        width: 42px;
+        height: 29px;
         corner-radius: 50%;
-        border: 7px solid #900;
-        background-image: linear-gradient(to top right, #f00 10%, #c00 60%, #fff);
+        border: 6px solid #900;
+        background-image: linear-gradient(to top, #ccc 30%, #eee 80%, #fff);
     }
 
-    .round-button:active, .round-button:checked {
-        background-image: linear-gradient(to top right, #d00 10%, #a00 92%, #ddd);
+    .ellipse-button:active, .ellipse-button:checked {
+        background-image: linear-gradient(to top, #bbb 80%, #ddd 90%, #eee);
     }
 "#;
 
 #[derive(Lens)]
-struct RoundButtonState {
+struct EllipseButtonState {
     pressed: bool,
     on_press: Arc<dyn Fn(&mut EventContext) + Send + Sync>,
 }
 
-enum RoundButtonEvent {
+enum EllipseButtonEvent {
     Press,
     Release,
 }
 
-impl View for RoundButtonState {}
+impl View for EllipseButtonState {}
 
-impl Model for RoundButtonState {
+impl Model for EllipseButtonState {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|e: &RoundButtonEvent, _| match e {
-            RoundButtonEvent::Press => {
+        event.map(|e: &EllipseButtonEvent, _| match e {
+            EllipseButtonEvent::Press => {
                 self.pressed = true;
                 (self.on_press)(cx);
             }
-            RoundButtonEvent::Release => {
+            EllipseButtonEvent::Release => {
                 self.pressed = false;
             }
         });
     }
 }
 
-pub struct RoundButton;
+pub struct EllipseButton;
 
-impl RoundButton {
+impl EllipseButton {
     pub fn build<F>(cx: &mut Context, label: &'static str, shortcut: Code, on_press: F)
     where
         F: 'static + Fn(&mut EventContext) + Send + Sync,
@@ -52,32 +53,32 @@ impl RoundButton {
 
         let vstack = VStack::new(cx, move |cx| {
             Model::build(
-                RoundButtonState {
+                EllipseButtonState {
                     pressed: false,
                     on_press: Arc::new(on_press),
                 },
                 cx,
             );
             Button::new(cx, |cx| Label::new(cx, " "))
-                .checked(RoundButtonState::pressed)
-                .on_press(|ex| ex.emit(RoundButtonEvent::Release))
-                .on_press_down(|ex| ex.emit(RoundButtonEvent::Press))
-                .class("round-button");
-            Label::new(cx, label);
+                .checked(EllipseButtonState::pressed)
+                .on_press(|ex| ex.emit(EllipseButtonEvent::Release))
+                .on_press_down(|ex| ex.emit(EllipseButtonEvent::Press))
+                .class("ellipse-button");
+            Label::new(cx, label).font_size(12.0);
         })
-        .height(Pixels(76.0))
+        .height(Pixels(64.0))
         .alignment(Alignment::BottomCenter)
-        .gap(Pixels(9.0));
+        .gap(Pixels(6.0));
 
         let owner = vstack.entity();
 
         cx.add_global_listener(move |cx, event| {
             event.map(|e: &WindowEvent, _| match e {
                 WindowEvent::KeyDown(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, RoundButtonEvent::Press);
+                    cx.emit_to(owner, EllipseButtonEvent::Press);
                 }
                 WindowEvent::KeyUp(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, RoundButtonEvent::Release);
+                    cx.emit_to(owner, EllipseButtonEvent::Release);
                 }
                 _ => {}
             });
