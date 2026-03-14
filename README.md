@@ -23,6 +23,7 @@ The tone track plays notes from the C major scale (C4–C5), one per step.
 
 | Key | Action |
 |-----|--------|
+| `p` | start/stop play |
 | `t` | choose instrument track |
 | `r` | randomize pattern |
 | `CMD+Q` | quit |
