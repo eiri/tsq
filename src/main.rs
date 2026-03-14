@@ -60,8 +60,8 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
             };
 
             for frame in data.chunks_mut(channels) {
-                if let Some(step) = clock.advance(bpm) {
-                    if playing {
+                if playing {
+                    if let Some(step) = clock.advance(bpm) {
                         if pattern.kick[step] {
                             tracks[0].push((kick(1.0), 0.4));
                         }
@@ -82,9 +82,13 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
                             };
                             tracks[3].push((voice, ttl));
                         }
+                        let mut s = shared.lock().unwrap();
+                        s.current_step = step;
                     }
-                    let mut s = shared.lock().unwrap();
-                    s.current_step = step;
+                } else {
+                    // Reset clock position so playback always restarts from step 0.
+                    clock.sample_counter = 0;
+                    clock.step = 0;
                 }
 
                 let sample = (render_track(&mut tracks[0], sr)

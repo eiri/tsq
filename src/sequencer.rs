@@ -78,7 +78,7 @@ impl Default for SequencerState {
             pattern: Pattern::default(),
             bpm: DEFAULT_BPM,
             current_step: 0,
-            playing: true,
+            playing: false,
             reset: false,
         }
     }
@@ -92,7 +92,7 @@ pub fn new_shared_state() -> SharedState {
 
 pub struct AudioClock {
     sample_rate: f64,
-    sample_counter: usize,
+    pub sample_counter: usize,
     pub step: usize,
 }
 
@@ -193,10 +193,11 @@ mod tests {
     }
 
     #[test]
-    fn shared_state_default_is_playing_at_120_bpm() {
+    fn shared_state_default_is_paused_at_120_bpm() {
         let state = new_shared_state();
         let s = state.lock().unwrap();
-        assert!(s.playing);
+        let paused = !s.playing;
+        assert!(paused);
         assert_eq!(s.bpm, 120.0);
         assert_eq!(s.current_step, 0);
     }
