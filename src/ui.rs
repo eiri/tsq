@@ -25,6 +25,7 @@ const STYLE: &str = r#"
 struct AppState {
     selected_track: usize,
     current_step: usize,
+    render_token: usize,
     kick: Vec<bool>,
     snare: Vec<bool>,
     hihat: Vec<Option<HihatVoice>>,
@@ -42,6 +43,7 @@ impl AppState {
         self.hihat = s.pattern.hihat.to_vec();
         self.tone = s.pattern.tone.to_vec();
         self.playing = s.playing;
+        self.render_token = self.render_token.wrapping_add(1);
     }
 }
 
@@ -69,6 +71,7 @@ impl Model for AppState {
             }
             AppEvent::NextTrack => {
                 self.selected_track = (self.selected_track + 1) % NUM_TRACKS;
+                self.render_token = self.render_token.wrapping_add(1);
             }
             AppEvent::TogglePlay => {
                 {
@@ -145,6 +148,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             AppState {
                 selected_track: 0,
                 current_step: s.current_step,
+                render_token: 0,
                 kick: s.pattern.kick.to_vec(),
                 snare: s.pattern.snare.to_vec(),
                 hihat: s.pattern.hihat.to_vec(),
@@ -164,8 +168,6 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         cx.add_stylesheet(include_style!("")).ok();
 
         HStack::new(cx, |cx| {
-            AppState::selected_track.get(cx);
-
             VStack::new(cx, |cx| {
                 Binding::new(cx, AppState::selected_track, |cx, selected_lens| {
                     let selected = selected_lens.get(cx);
@@ -190,7 +192,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             .padding_bottom(Pixels(50.0));
 
             VStack::new(cx, |cx| {
-                Binding::new(cx, AppState::current_step, move |cx, _| {
+                Binding::new(cx, AppState::render_token, move |cx, _| {
                     let current = AppState::current_step.get(cx);
                     let selected = AppState::selected_track.get(cx);
                     match selected {
