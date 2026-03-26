@@ -41,14 +41,42 @@ impl Model for RoundButtonState {
     }
 }
 
-pub struct RoundButton;
+pub struct RoundButton {
+    label: &'static str,
+    shortcut: Code,
+    width: Units,
+    height: Units,
+}
 
 impl RoundButton {
-    pub fn build<F>(cx: &mut Context, label: &'static str, shortcut: Code, on_press: F)
+    pub fn new(label: &'static str, shortcut: Code) -> Self {
+        Self {
+            label,
+            shortcut,
+            width: Units::Auto,
+            height: Pixels(76.0),
+        }
+    }
+
+    #[expect(dead_code)]
+    pub fn width(mut self, width: Units) -> Self {
+        self.width = width;
+        self
+    }
+
+    pub fn height(mut self, height: Units) -> Self {
+        self.height = height;
+        self
+    }
+
+    pub fn build<F>(self, cx: &mut Context, on_press: F)
     where
         F: 'static + Fn(&mut EventContext) + Send + Sync,
     {
         cx.add_stylesheet(STYLE).ok();
+
+        let label = self.label;
+        let shortcut = self.shortcut;
 
         let vstack = VStack::new(cx, move |cx| {
             Model::build(
@@ -65,7 +93,8 @@ impl RoundButton {
                 .class("round-button");
             Label::new(cx, label);
         })
-        .height(Pixels(76.0))
+        .width(self.width)
+        .height(self.height)
         .alignment(Alignment::BottomCenter)
         .gap(Pixels(9.0));
 

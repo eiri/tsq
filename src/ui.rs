@@ -169,27 +169,33 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
 
         HStack::new(cx, |cx| {
             VStack::new(cx, |cx| {
-                Binding::new(cx, AppState::selected_track, |cx, selected_lens| {
-                    let selected = selected_lens.get(cx);
-                    HStack::new(cx, |cx| {
-                        for i in 0..NUM_TRACKS {
-                            let state = if i == selected {
-                                PipState::On
-                            } else {
-                                PipState::Off
-                            };
-                            Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
-                        }
-                    })
-                    .height(Pixels(64.0))
-                    .alignment(Alignment::Center)
-                    .horizontal_gap(Pixels(9.0));
-                });
+                VStack::new(cx, move |cx| {
+                    Binding::new(cx, AppState::selected_track, |cx, selected_lens| {
+                        let selected = selected_lens.get(cx);
+                        HStack::new(cx, |cx| {
+                            for i in 0..NUM_TRACKS {
+                                let state = if i == selected {
+                                    PipState::On
+                                } else {
+                                    PipState::Off
+                                };
+                                Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
+                            }
+                        })
+                        .height(Pixels(64.0))
+                        .alignment(Alignment::Center)
+                        .horizontal_gap(Pixels(9.0));
+                    });
+                })
+                .padding_top(Pixels(7.0))
+                .alignment(Alignment::TopCenter)
+                .height(Pixels(200.0));
 
-                RoundButton::build(cx, "TRACK", Code::KeyT, |ex| ex.emit(AppEvent::NextTrack));
+                RoundButton::new("TRACK", Code::KeyT)
+                    .height(Pixels(100.0))
+                    .build(cx, |ex| ex.emit(AppEvent::NextTrack));
             })
-            .alignment(Alignment::BottomCenter)
-            .padding_bottom(Pixels(50.0));
+            .alignment(Alignment::Center);
 
             VStack::new(cx, |cx| {
                 Binding::new(cx, AppState::render_token, move |cx, _| {
@@ -227,12 +233,18 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             .class("seq");
 
             VStack::new(cx, |cx| {
-                EllipseButton::build(cx, "PLAY", Code::KeyP, |ex| ex.emit(AppEvent::TogglePlay));
-                RoundButton::build(cx, "RAND", Code::KeyR, |ex| ex.emit(AppEvent::Randomize));
+                VStack::new(cx, move |cx| {
+                    EllipseButton::new("PLAY", Code::KeyP)
+                        .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
+                })
+                .padding_top(Pixels(7.0))
+                .alignment(Alignment::TopCenter)
+                .height(Pixels(200.0));
+                RoundButton::new("RAND", Code::KeyR)
+                    .height(Pixels(100.0))
+                    .build(cx, |ex| ex.emit(AppEvent::Randomize));
             })
-            .alignment(Alignment::BottomCenter)
-            .vertical_gap(Pixels(12.0))
-            .padding_bottom(Pixels(32.0));
+            .alignment(Alignment::Center);
         })
         .alignment(Alignment::Center)
         .background_color(Color::lightyellow())
