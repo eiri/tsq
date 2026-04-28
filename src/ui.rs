@@ -21,29 +21,26 @@ const STYLE: &str = r#"
     }
 "#;
 
-#[derive(Lens)]
 struct AppState {
-    selected_track: usize,
-    current_step: usize,
-    render_token: usize,
-    kick: Vec<bool>,
-    snare: Vec<bool>,
-    hihat: Vec<Option<HihatVoice>>,
-    tone: Vec<bool>,
-    playing: bool,
+    selected_track: Signal<usize>,
+    current_step: Signal<usize>,
+    kick: Signal<Vec<bool>>,
+    snare: Signal<Vec<bool>>,
+    hihat: Signal<Vec<Option<HihatVoice>>>,
+    tone: Signal<Vec<bool>>,
+    playing: Signal<bool>,
     shared: SharedState,
 }
 
 impl AppState {
-    fn sync_from_shared(&mut self) {
+    fn sync_from_shared(&self) {
         let s = self.shared.lock().unwrap();
-        self.current_step = s.current_step;
-        self.kick = s.pattern.kick.to_vec();
-        self.snare = s.pattern.snare.to_vec();
-        self.hihat = s.pattern.hihat.to_vec();
-        self.tone = s.pattern.tone.to_vec();
-        self.playing = s.playing;
-        self.render_token = self.render_token.wrapping_add(1);
+        self.current_step.set(s.current_step);
+        self.kick.set(s.pattern.kick.to_vec());
+        self.snare.set(s.pattern.snare.to_vec());
+        self.hihat.set(s.pattern.hihat.to_vec());
+        self.tone.set(s.pattern.tone.to_vec());
+        self.playing.set(s.playing);
     }
 }
 
@@ -70,8 +67,7 @@ impl Model for AppState {
                 self.sync_from_shared();
             }
             AppEvent::NextTrack => {
-                self.selected_track = (self.selected_track + 1) % NUM_TRACKS;
-                self.render_token = self.render_token.wrapping_add(1);
+                self.selected_track.update(|t| *t = (*t + 1) % NUM_TRACKS);
             }
             AppEvent::TogglePlay => {
                 {
@@ -143,22 +139,30 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
     Application::new(move |cx| {
         cx.add_stylesheet(STYLE).expect("loads the style");
 
-        let initial_state = {
+        let (selected_track, current_step, kick, snare, hihat, tone, playing) = {
             let s = shared_clone.lock().unwrap();
-            AppState {
-                selected_track: 0,
-                current_step: s.current_step,
-                render_token: 0,
-                kick: s.pattern.kick.to_vec(),
-                snare: s.pattern.snare.to_vec(),
-                hihat: s.pattern.hihat.to_vec(),
-                tone: s.pattern.tone.to_vec(),
-                playing: s.playing,
-                shared: shared_clone.clone(),
-            }
+            (
+                Signal::new(0),
+                Signal::new(s.current_step),
+                Signal::new(s.pattern.kick.to_vec()),
+                Signal::new(s.pattern.snare.to_vec()),
+                Signal::new(s.pattern.hihat.to_vec()),
+                Signal::new(s.pattern.tone.to_vec()),
+                Signal::new(s.playing),
+            )
         };
 
-        initial_state.build(cx);
+        AppState {
+            selected_track,
+            current_step,
+            kick,
+            snare,
+            hihat,
+            tone,
+            playing,
+            shared: shared_clone.clone(),
+        }
+        .build(cx);
 
         let timer = cx.add_timer(std::time::Duration::from_millis(16), None, |cx, _| {
             cx.emit(AppEvent::Tick);
@@ -170,9 +174,9 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         HStack::new(cx, |cx| {
             VStack::new(cx, |cx| {
                 VStack::new(cx, move |cx| {
-                    Binding::new(cx, AppState::selected_track, |cx, selected_lens| {
-                        let selected = selected_lens.get(cx);
-                        HStack::new(cx, |cx| {
+                    Binding::new(cx, selected_track, move |cx| {
+                        let selected = selected_track.get();
+                        HStack::new(cx, move |cx| {
                             for i in 0..NUM_TRACKS {
                                 let state = if i == selected {
                                     PipState::On
@@ -191,39 +195,49 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 .alignment(Alignment::TopCenter)
                 .height(Pixels(200.0));
 
-                RoundButton::new("TRACK", Code::KeyT)
+                RoundButton::new("TRACK")
                     .height(Pixels(100.0))
                     .build(cx, |ex| ex.emit(AppEvent::NextTrack));
             })
             .alignment(Alignment::Center);
 
             VStack::new(cx, |cx| {
-                Binding::new(cx, AppState::render_token, move |cx, _| {
-                    let current = AppState::current_step.get(cx);
-                    let selected = AppState::selected_track.get(cx);
-                    match selected {
-                        0 => {
-                            let kick = AppState::kick.get(cx);
-                            bool_step_row(cx, &kick, current, 0..HALF);
-                            bool_step_row(cx, &kick, current, HALF..STEPS);
+                Binding::new(cx, current_step, move |cx| {
+                    Binding::new(cx, selected_track, move |cx| {
+                        let current = current_step.get();
+                        let selected = selected_track.get();
+                        match selected {
+                            0 => {
+                                Binding::new(cx, kick, move |cx| {
+                                    let k = kick.get();
+                                    bool_step_row(cx, &k, current, 0..HALF);
+                                    bool_step_row(cx, &k, current, HALF..STEPS);
+                                });
+                            }
+                            1 => {
+                                Binding::new(cx, snare, move |cx| {
+                                    let s = snare.get();
+                                    bool_step_row(cx, &s, current, 0..HALF);
+                                    bool_step_row(cx, &s, current, HALF..STEPS);
+                                });
+                            }
+                            2 => {
+                                Binding::new(cx, hihat, move |cx| {
+                                    let h = hihat.get();
+                                    hihat_step_row(cx, &h, current, 0..HALF);
+                                    hihat_step_row(cx, &h, current, HALF..STEPS);
+                                });
+                            }
+                            3 => {
+                                Binding::new(cx, tone, move |cx| {
+                                    let t = tone.get();
+                                    bool_step_row(cx, &t, current, 0..HALF);
+                                    bool_step_row(cx, &t, current, HALF..STEPS);
+                                });
+                            }
+                            _ => unreachable!(),
                         }
-                        1 => {
-                            let snare = AppState::snare.get(cx);
-                            bool_step_row(cx, &snare, current, 0..HALF);
-                            bool_step_row(cx, &snare, current, HALF..STEPS);
-                        }
-                        2 => {
-                            let hihat = AppState::hihat.get(cx);
-                            hihat_step_row(cx, &hihat, current, 0..HALF);
-                            hihat_step_row(cx, &hihat, current, HALF..STEPS);
-                        }
-                        3 => {
-                            let tone = AppState::tone.get(cx);
-                            bool_step_row(cx, &tone, current, 0..HALF);
-                            bool_step_row(cx, &tone, current, HALF..STEPS);
-                        }
-                        _ => unreachable!(),
-                    }
+                    });
                 });
             })
             .width(Percentage(50.0))
@@ -234,13 +248,12 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
 
             VStack::new(cx, |cx| {
                 VStack::new(cx, move |cx| {
-                    EllipseButton::new("PLAY", Code::KeyP)
-                        .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
+                    EllipseButton::new("PLAY").build(cx, |ex| ex.emit(AppEvent::TogglePlay));
                 })
                 .padding_top(Pixels(7.0))
                 .alignment(Alignment::TopCenter)
                 .height(Pixels(200.0));
-                RoundButton::new("RAND", Code::KeyR)
+                RoundButton::new("RAND")
                     .height(Pixels(100.0))
                     .build(cx, |ex| ex.emit(AppEvent::Randomize));
             })
