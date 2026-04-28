@@ -52,6 +52,13 @@ enum AppEvent {
     TogglePlay,
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum KeymapAction {
+    OnP,
+    OnT,
+    OnR,
+}
+
 impl Model for AppState {
     fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
         event.map(|e: &AppEvent, _| match e {
@@ -170,6 +177,22 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         cx.start_timer(timer);
 
         cx.add_stylesheet(include_style!("")).ok();
+
+        Keymap::from(vec![
+            (
+                KeyChord::new(Modifiers::empty(), Code::KeyP),
+                KeymapEntry::new(KeymapAction::OnP, |ex| ex.emit(AppEvent::TogglePlay)),
+            ),
+            (
+                KeyChord::new(Modifiers::empty(), Code::KeyT),
+                KeymapEntry::new(KeymapAction::OnT, |ex| ex.emit(AppEvent::NextTrack)),
+            ),
+            (
+                KeyChord::new(Modifiers::empty(), Code::KeyR),
+                KeymapEntry::new(KeymapAction::OnR, |ex| ex.emit(AppEvent::Randomize)),
+            ),
+        ])
+        .build(cx);
 
         HStack::new(cx, |cx| {
             VStack::new(cx, |cx| {
