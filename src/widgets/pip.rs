@@ -1,7 +1,7 @@
 use vizia::prelude::*;
 use vizia::vg;
 
-#[derive(Debug, Clone, Copy, PartialEq, Data)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PipState {
     Off,
     On,
@@ -42,13 +42,15 @@ impl View for Pip {
 
         let no_flags = vg::gradient_shader::Flags::empty();
 
-        // face path
-        let mut face = vg::Path::new();
-        face.move_to(tl);
-        face.line_to(tr);
-        face.line_to(br);
-        face.line_to(bl);
-        face.close();
+        let face = {
+            let mut pb = vg::PathBuilder::new();
+            pb.move_to(tl);
+            pb.line_to(tr);
+            pb.line_to(br);
+            pb.line_to(bl);
+            pb.close();
+            pb.snapshot()
+        };
 
         // centre of the face for gradient origins
         let cx_f = x + w * 0.5;
@@ -64,7 +66,7 @@ impl View for Pip {
                 ];
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
-                if let Some(shader) = vg::shader::Shader::linear_gradient(
+                if let Some(shader) = vg::gradient_shader::linear(
                     ((cx_f, y), (cx_f, y + h)),
                     colors.as_ref(),
                     Some(pos.as_ref()),
@@ -100,7 +102,7 @@ impl View for Pip {
                 ];
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
-                if let Some(shader) = vg::shader::Shader::radial_gradient(
+                if let Some(shader) = vg::gradient_shader::radial(
                     (focal_x, focal_y),
                     grad_r * 1.8,
                     colors.as_ref(),
@@ -122,7 +124,7 @@ impl View for Pip {
                 let rim_colors = [argb(0, 200, 10, 200), argb(120, 220, 20, 220)];
                 let rim_pos: [f32; 2] = [0.7, 1.0];
 
-                if let Some(rim_shader) = vg::shader::Shader::radial_gradient(
+                if let Some(rim_shader) = vg::gradient_shader::radial(
                     (cx_f, cy_f),
                     grad_r,
                     rim_colors.as_ref(),
@@ -143,7 +145,7 @@ impl View for Pip {
             }
         }
 
-        // outer border, top edge lighter, bottom - darkr
+        // outer border, top edge lighter, bottom - darker
         {
             let mut top_paint = vg::Paint::default();
             top_paint.set_anti_alias(true);
@@ -151,9 +153,12 @@ impl View for Pip {
             top_paint.set_stroke_width(1.2);
             top_paint.set_color(argb(180, 210, 205, 160));
 
-            let mut top = vg::Path::new();
-            top.move_to(tl);
-            top.line_to(tr);
+            let top = {
+                let mut pb = vg::PathBuilder::new();
+                pb.move_to(tl);
+                pb.line_to(tr);
+                pb.snapshot()
+            };
             canvas.draw_path(&top, &top_paint);
 
             let mut bot_paint = vg::Paint::default();
@@ -162,9 +167,12 @@ impl View for Pip {
             bot_paint.set_stroke_width(1.0);
             bot_paint.set_color(argb(120, 30, 28, 18));
 
-            let mut bot = vg::Path::new();
-            bot.move_to(bl);
-            bot.line_to(br);
+            let bot = {
+                let mut pb = vg::PathBuilder::new();
+                pb.move_to(bl);
+                pb.line_to(br);
+                pb.snapshot()
+            };
             canvas.draw_path(&bot, &bot_paint);
 
             // Side edges - medium
@@ -174,11 +182,14 @@ impl View for Pip {
             side_paint.set_stroke_width(0.8);
             side_paint.set_color(argb(100, 130, 128, 90));
 
-            let mut sides = vg::Path::new();
-            sides.move_to(tl);
-            sides.line_to(bl);
-            sides.move_to(tr);
-            sides.line_to(br);
+            let sides = {
+                let mut pb = vg::PathBuilder::new();
+                pb.move_to(tl);
+                pb.line_to(bl);
+                pb.move_to(tr);
+                pb.line_to(br);
+                pb.snapshot()
+            };
             canvas.draw_path(&sides, &side_paint);
         }
     }

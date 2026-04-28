@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use vizia::prelude::*;
 
 const STYLE: &str = r#"
@@ -14,45 +13,16 @@ const STYLE: &str = r#"
     }
 "#;
 
-#[derive(Lens)]
-struct RoundButtonState {
-    pressed: bool,
-    on_press: Arc<dyn Fn(&mut EventContext) + Send + Sync>,
-}
-
-enum RoundButtonEvent {
-    Press,
-    Release,
-}
-
-impl View for RoundButtonState {}
-
-impl Model for RoundButtonState {
-    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|e: &RoundButtonEvent, _| match e {
-            RoundButtonEvent::Press => {
-                self.pressed = true;
-                (self.on_press)(cx);
-            }
-            RoundButtonEvent::Release => {
-                self.pressed = false;
-            }
-        });
-    }
-}
-
 pub struct RoundButton {
     label: &'static str,
-    shortcut: Code,
     width: Units,
     height: Units,
 }
 
 impl RoundButton {
-    pub fn new(label: &'static str, shortcut: Code) -> Self {
+    pub fn new(label: &'static str) -> Self {
         Self {
             label,
-            shortcut,
             width: Units::Auto,
             height: Pixels(76.0),
         }
@@ -76,20 +46,19 @@ impl RoundButton {
         cx.add_stylesheet(STYLE).ok();
 
         let label = self.label;
-        let shortcut = self.shortcut;
 
-        let vstack = VStack::new(cx, move |cx| {
-            Model::build(
-                RoundButtonState {
-                    pressed: false,
-                    on_press: Arc::new(on_press),
-                },
-                cx,
-            );
+        let pressed = Signal::new(false);
+
+        VStack::new(cx, move |cx| {
             Button::new(cx, |cx| Label::new(cx, " "))
-                .checked(RoundButtonState::pressed)
-                .on_press(|ex| ex.emit(RoundButtonEvent::Release))
-                .on_press_down(|ex| ex.emit(RoundButtonEvent::Press))
+                .checked(pressed)
+                .on_press(move |_ex| {
+                    pressed.set(false);
+                })
+                .on_press_down(move |ex| {
+                    pressed.set(true);
+                    on_press(ex);
+                })
                 .class("round-button");
             Label::new(cx, label);
         })
@@ -97,19 +66,5 @@ impl RoundButton {
         .height(self.height)
         .alignment(Alignment::BottomCenter)
         .gap(Pixels(9.0));
-
-        let owner = vstack.entity();
-
-        cx.add_global_listener(move |cx, event| {
-            event.map(|e: &WindowEvent, _| match e {
-                WindowEvent::KeyDown(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, RoundButtonEvent::Press);
-                }
-                WindowEvent::KeyUp(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, RoundButtonEvent::Release);
-                }
-                _ => {}
-            });
-        });
     }
 }

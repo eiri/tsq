@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use vizia::prelude::*;
 
 const STYLE: &str = r#"
@@ -15,45 +14,16 @@ const STYLE: &str = r#"
     }
 "#;
 
-#[derive(Lens)]
-struct EllipseButtonState {
-    pressed: bool,
-    on_press: Arc<dyn Fn(&mut EventContext) + Send + Sync>,
-}
-
-enum EllipseButtonEvent {
-    Press,
-    Release,
-}
-
-impl View for EllipseButtonState {}
-
-impl Model for EllipseButtonState {
-    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
-        event.map(|e: &EllipseButtonEvent, _| match e {
-            EllipseButtonEvent::Press => {
-                self.pressed = true;
-                (self.on_press)(cx);
-            }
-            EllipseButtonEvent::Release => {
-                self.pressed = false;
-            }
-        });
-    }
-}
-
 pub struct EllipseButton {
     label: &'static str,
-    shortcut: Code,
     width: Units,
     height: Units,
 }
 
 impl EllipseButton {
-    pub fn new(label: &'static str, shortcut: Code) -> Self {
+    pub fn new(label: &'static str) -> Self {
         Self {
             label,
-            shortcut,
             width: Units::Auto,
             height: Pixels(64.0),
         }
@@ -78,20 +48,19 @@ impl EllipseButton {
         cx.add_stylesheet(STYLE).ok();
 
         let label = self.label;
-        let shortcut = self.shortcut;
 
-        let vstack = VStack::new(cx, move |cx| {
-            Model::build(
-                EllipseButtonState {
-                    pressed: false,
-                    on_press: Arc::new(on_press),
-                },
-                cx,
-            );
+        let pressed = Signal::new(false);
+
+        VStack::new(cx, move |cx| {
             Button::new(cx, |cx| Label::new(cx, " "))
-                .checked(EllipseButtonState::pressed)
-                .on_press(|ex| ex.emit(EllipseButtonEvent::Release))
-                .on_press_down(|ex| ex.emit(EllipseButtonEvent::Press))
+                .checked(pressed)
+                .on_press(move |_ex| {
+                    pressed.set(false);
+                })
+                .on_press_down(move |ex| {
+                    pressed.set(true);
+                    on_press(ex);
+                })
                 .class("ellipse-button");
             Label::new(cx, label).font_size(12.0);
         })
@@ -99,19 +68,5 @@ impl EllipseButton {
         .height(self.height)
         .alignment(Alignment::BottomCenter)
         .gap(Pixels(6.0));
-
-        let owner = vstack.entity();
-
-        cx.add_global_listener(move |cx, event| {
-            event.map(|e: &WindowEvent, _| match e {
-                WindowEvent::KeyDown(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, EllipseButtonEvent::Press);
-                }
-                WindowEvent::KeyUp(code, _) if *code == shortcut => {
-                    cx.emit_to(owner, EllipseButtonEvent::Release);
-                }
-                _ => {}
-            });
-        });
     }
 }
