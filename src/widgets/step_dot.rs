@@ -1,6 +1,11 @@
 use vizia::prelude::*;
 use vizia::vg;
 
+use super::colors::{
+    DOT_BEZEL_0, DOT_BEZEL_1, DOT_BEZEL_2, DOT_CRESCENT, DOT_HALO_M, DOT_HALO_R, DOT_LED_OFF,
+    DOT_PIT_EDGE, DOT_SPEC, argb, c,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepDotState {
     Off,
@@ -17,12 +22,6 @@ impl StepDot {
     pub fn new(cx: &mut Context, state: StepDotState) -> Handle<'_, Self> {
         Self { state }.build(cx, |_cx| {})
     }
-}
-
-// FIXME! - common helper later
-#[inline]
-fn argb(a: u8, r: u8, g: u8, b: u8) -> vg::Color {
-    vg::Color::from_argb(a, r, g, b)
 }
 
 impl View for StepDot {
@@ -44,13 +43,22 @@ impl View for StepDot {
 
         let no_flags = vg::gradient_shader::Flags::empty();
 
-        // outer halo
         if glow_alpha > 0.0 {
             let halo_r = radius * glow_factor;
             let colors = [
-                argb((glow_alpha * 180.0) as u8, 220, 30, 10),
-                argb((glow_alpha * 80.0) as u8, 180, 20, 5),
-                argb(0, 180, 20, 5),
+                argb(
+                    (glow_alpha * 180.0) as u8,
+                    DOT_HALO_R.0,
+                    DOT_HALO_R.1,
+                    DOT_HALO_R.2,
+                ),
+                argb(
+                    (glow_alpha * 80.0) as u8,
+                    DOT_HALO_M.0,
+                    DOT_HALO_M.1,
+                    DOT_HALO_M.2,
+                ),
+                argb(0, DOT_HALO_M.0, DOT_HALO_M.1, DOT_HALO_M.2),
             ];
             let pos: [f32; 3] = [0.0, 0.55, 1.0];
 
@@ -70,13 +78,8 @@ impl View for StepDot {
             }
         }
 
-        // bezel rim
         {
-            let colors = [
-                argb(255, 210, 208, 175),
-                argb(255, 175, 172, 140),
-                argb(255, 130, 128, 100),
-            ];
+            let colors = [c(DOT_BEZEL_0), c(DOT_BEZEL_1), c(DOT_BEZEL_2)];
             let pos: [f32; 3] = [0.0, 0.40, 1.0];
 
             if let Some(shader) = vg::gradient_shader::linear(
@@ -94,7 +97,6 @@ impl View for StepDot {
             }
         }
 
-        // pit interior
         {
             let pit_r = radius
                 * match self.state {
@@ -108,7 +110,7 @@ impl View for StepDot {
             let colors = [
                 argb(255, dark, dark, dark / 2),
                 argb(255, mid, mid, mid / 2),
-                argb(255, 180, 175, 110),
+                c(DOT_PIT_EDGE),
             ];
             let pos: [f32; 3] = [0.0, 0.7, 1.0];
 
@@ -128,11 +130,10 @@ impl View for StepDot {
             }
         }
 
-        // led fill
         let led_r = radius
             * match self.state {
                 StepDotState::Off => 0.80,
-                StepDotState::HalfDim => 0.86, // matches pit_r
+                StepDotState::HalfDim => 0.86,
                 StepDotState::Dim => 0.84,
                 StepDotState::On => 0.80,
             };
@@ -166,7 +167,6 @@ impl View for StepDot {
                 canvas.draw_circle((cx_f, cy_f), led_r, &paint);
             }
 
-            // hot-spot on Dim and On
             if led_alpha > 0.5 {
                 let spec_r = led_r * 0.22;
                 let spec_cx = cx_f - led_r * 0.22;
@@ -175,24 +175,22 @@ impl View for StepDot {
 
                 let mut paint = vg::Paint::default();
                 paint.set_anti_alias(true);
-                paint.set_color(argb(spec_a, 255, 200, 180));
+                paint.set_color(argb(spec_a, DOT_SPEC.0, DOT_SPEC.1, DOT_SPEC.2));
                 canvas.draw_circle((spec_cx, spec_cy), spec_r, &paint);
             }
         } else {
-            // Off
             let mut paint = vg::Paint::default();
             paint.set_anti_alias(true);
-            paint.set_color(argb(255, 18, 8, 8));
+            paint.set_color(c(DOT_LED_OFF));
             canvas.draw_circle((cx_f, cy_f), led_r, &paint);
         }
 
-        // rim crescent highlight
         {
             let mut paint = vg::Paint::default();
             paint.set_anti_alias(true);
             paint.set_style(vg::PaintStyle::Stroke);
             paint.set_stroke_width(radius * 0.06);
-            paint.set_color(argb(60, 200, 200, 200));
+            paint.set_color(c(DOT_CRESCENT));
 
             let path = {
                 let mut pb = vg::PathBuilder::new();

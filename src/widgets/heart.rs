@@ -2,27 +2,27 @@ use vizia::prelude::*;
 use vizia::vg;
 
 use super::colors::{
-    PIP_BORDER_BOT, PIP_BORDER_SIDE, PIP_BORDER_TOP, PIP_OFF_0, PIP_OFF_1, PIP_OFF_2, PIP_ON_B,
-    PIP_ON_G, PIP_ON_G_BRIGHT, PIP_ON_R, PIP_RIM_0, PIP_RIM_1, argb,
+    HEART_BORDER_BOT, HEART_BORDER_SIDE, HEART_BORDER_TOP, HEART_OFF_0, HEART_OFF_1, HEART_OFF_2,
+    HEART_ON_B, HEART_ON_G, HEART_ON_G_BRIGHT, HEART_ON_R, HEART_RIM_0, HEART_RIM_1, argb,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PipState {
+pub enum HeartState {
     Off,
     On,
 }
 
-pub struct Pip {
-    state: PipState,
+pub struct Heart {
+    state: HeartState,
 }
 
-impl Pip {
-    pub fn new(cx: &mut Context, state: PipState) -> Handle<'_, Self> {
+impl Heart {
+    pub fn new(cx: &mut Context, state: HeartState) -> Handle<'_, Self> {
         Self { state }.build(cx, |_cx| {})
     }
 }
 
-impl View for Pip {
+impl View for Heart {
     fn draw(&self, cx: &mut DrawContext, canvas: &Canvas) {
         let bounds = cx.bounds();
         let w = bounds.w;
@@ -30,14 +30,27 @@ impl View for Pip {
         let x = bounds.x;
         let y = bounds.y;
 
-        // Skew offset — how much the top edge shifts right relative to bottom
-        let skew = w * 0.18;
+        let ideal_h_from_w = w * (3.0_f32.sqrt() / 2.0);
+        let (base, tri_h) = if ideal_h_from_w <= h {
+            // width-constrained
+            (w, ideal_h_from_w)
+        } else {
+            // height-constrained — derive base from available height
+            let b = h / (3.0_f32.sqrt() / 2.0);
+            (b, h)
+        };
 
-        // The four corners of the skewed quad from top-left
-        let tl = (x + skew, y);
-        let tr = (x + w, y);
-        let br = (x + w - skew, y + h);
-        let bl = (x, y + h);
+        let left = x + (w - base) * 0.5;
+        let right = left + base;
+        let top_y = y + (h - tri_h) * 0.5;
+        let bot_y = top_y + tri_h;
+
+        // tl - top-left  (top edge, left end)
+        // tr - top-right (top edge, right end)
+        // bp - bottom apex (pointing downward)
+        let tl = (left, top_y);
+        let tr = (right, top_y);
+        let bp = (left + base * 0.5, bot_y);
 
         let no_flags = vg::gradient_shader::Flags::empty();
 
@@ -45,28 +58,26 @@ impl View for Pip {
             let mut pb = vg::PathBuilder::new();
             pb.move_to(tl);
             pb.line_to(tr);
-            pb.line_to(br);
-            pb.line_to(bl);
+            pb.line_to(bp);
             pb.close();
             pb.snapshot()
         };
 
-        // centre of the face for gradient origins
-        let cx_f = x + w * 0.5;
-        let cy_f = y + h * 0.5;
-        let grad_r = w.max(h) * 0.9;
+        let cx_f = left + base * 0.5;
+        let cy_f = top_y + tri_h / 3.0;
+        let grad_r = base.max(tri_h) * 0.9;
 
         match self.state {
-            PipState::Off => {
+            HeartState::Off => {
                 let colors = [
-                    argb(PIP_OFF_0.0, PIP_OFF_0.1, PIP_OFF_0.2, PIP_OFF_0.3),
-                    argb(PIP_OFF_1.0, PIP_OFF_1.1, PIP_OFF_1.2, PIP_OFF_1.3),
-                    argb(PIP_OFF_2.0, PIP_OFF_2.1, PIP_OFF_2.2, PIP_OFF_2.3),
+                    argb(HEART_OFF_0.0, HEART_OFF_0.1, HEART_OFF_0.2, HEART_OFF_0.3),
+                    argb(HEART_OFF_1.0, HEART_OFF_1.1, HEART_OFF_1.2, HEART_OFF_1.3),
+                    argb(HEART_OFF_2.0, HEART_OFF_2.1, HEART_OFF_2.2, HEART_OFF_2.3),
                 ];
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
                 if let Some(shader) = vg::gradient_shader::linear(
-                    ((cx_f, y), (cx_f, y + h)),
+                    ((cx_f, top_y), (cx_f, bot_y)),
                     colors.as_ref(),
                     Some(pos.as_ref()),
                     vg::TileMode::Clamp,
@@ -83,16 +94,19 @@ impl View for Pip {
                 }
             }
 
-            PipState::On => {
-                // Base light fill — offset focal point toward bottom-left
-                // so shadow falls at top-right
-                let focal_x = cx_f - grad_r * 0.20;
-                let focal_y = cy_f + grad_r * 0.25;
+            HeartState::On => {
+                let focal_x = cx_f - grad_r * 0.18;
+                let focal_y = cy_f - grad_r * 0.20;
 
                 let colors = [
-                    argb(255, PIP_ON_R, PIP_ON_G_BRIGHT, PIP_ON_B),
-                    argb(255, PIP_ON_R, PIP_ON_G, PIP_ON_B),
-                    argb(255, (PIP_ON_R / 3).max(15), 3, 3),
+                    argb(255, HEART_ON_R, HEART_ON_G_BRIGHT, HEART_ON_B),
+                    argb(255, HEART_ON_R, HEART_ON_G, HEART_ON_B),
+                    argb(
+                        255,
+                        (HEART_ON_R / 3).max(15),
+                        (HEART_ON_G / 4).max(10),
+                        HEART_ON_B,
+                    ),
                 ];
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
@@ -114,12 +128,11 @@ impl View for Pip {
                     canvas.restore();
                 }
 
-                // Rim glow
                 let rim_colors = [
-                    argb(PIP_RIM_0.0, PIP_RIM_0.1, PIP_RIM_0.2, PIP_RIM_0.3),
-                    argb(PIP_RIM_1.0, PIP_RIM_1.1, PIP_RIM_1.2, PIP_RIM_1.3),
+                    argb(HEART_RIM_0.0, HEART_RIM_0.1, HEART_RIM_0.2, HEART_RIM_0.3),
+                    argb(HEART_RIM_1.0, HEART_RIM_1.1, HEART_RIM_1.2, HEART_RIM_1.3),
                 ];
-                let rim_pos: [f32; 2] = [0.7, 1.0];
+                let rim_pos: [f32; 2] = [0.65, 1.0];
 
                 if let Some(rim_shader) = vg::gradient_shader::radial(
                     (cx_f, cy_f),
@@ -142,66 +155,67 @@ impl View for Pip {
             }
         }
 
-        // Outer border: top edge lighter, bottom darker, sides medium
         {
             let mut top_paint = vg::Paint::default();
             top_paint.set_anti_alias(true);
             top_paint.set_style(vg::PaintStyle::Stroke);
             top_paint.set_stroke_width(1.2);
             top_paint.set_color(argb(
-                PIP_BORDER_TOP.0,
-                PIP_BORDER_TOP.1,
-                PIP_BORDER_TOP.2,
-                PIP_BORDER_TOP.3,
+                HEART_BORDER_TOP.0,
+                HEART_BORDER_TOP.1,
+                HEART_BORDER_TOP.2,
+                HEART_BORDER_TOP.3,
             ));
 
-            let top = {
+            let top_edge = {
                 let mut pb = vg::PathBuilder::new();
                 pb.move_to(tl);
                 pb.line_to(tr);
                 pb.snapshot()
             };
-            canvas.draw_path(&top, &top_paint);
+            canvas.draw_path(&top_edge, &top_paint);
+        }
 
+        {
             let mut bot_paint = vg::Paint::default();
             bot_paint.set_anti_alias(true);
             bot_paint.set_style(vg::PaintStyle::Stroke);
             bot_paint.set_stroke_width(1.0);
             bot_paint.set_color(argb(
-                PIP_BORDER_BOT.0,
-                PIP_BORDER_BOT.1,
-                PIP_BORDER_BOT.2,
-                PIP_BORDER_BOT.3,
+                HEART_BORDER_BOT.0,
+                HEART_BORDER_BOT.1,
+                HEART_BORDER_BOT.2,
+                HEART_BORDER_BOT.3,
             ));
 
-            let bot = {
+            let bot_edges = {
                 let mut pb = vg::PathBuilder::new();
-                pb.move_to(bl);
-                pb.line_to(br);
+                pb.move_to(tl);
+                pb.line_to(bp);
                 pb.snapshot()
             };
-            canvas.draw_path(&bot, &bot_paint);
+            canvas.draw_path(&bot_edges, &bot_paint);
+        }
 
+        {
             let mut side_paint = vg::Paint::default();
             side_paint.set_anti_alias(true);
             side_paint.set_style(vg::PaintStyle::Stroke);
             side_paint.set_stroke_width(0.8);
             side_paint.set_color(argb(
-                PIP_BORDER_SIDE.0,
-                PIP_BORDER_SIDE.1,
-                PIP_BORDER_SIDE.2,
-                PIP_BORDER_SIDE.3,
+                HEART_BORDER_SIDE.0,
+                HEART_BORDER_SIDE.1,
+                HEART_BORDER_SIDE.2,
+                HEART_BORDER_SIDE.3,
             ));
 
-            let sides = {
+            let right_edge = {
                 let mut pb = vg::PathBuilder::new();
-                pb.move_to(tl);
-                pb.line_to(bl);
                 pb.move_to(tr);
-                pb.line_to(br);
+                pb.line_to(bp);
                 pb.snapshot()
             };
-            canvas.draw_path(&sides, &side_paint);
+            canvas.draw_path(&right_edge, &side_paint);
         }
     }
 }
