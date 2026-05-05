@@ -30,41 +30,39 @@ impl View for Heart {
         let x = bounds.x;
         let y = bounds.y;
 
-        let ideal_h_from_w = w * (3.0_f32.sqrt() / 2.0);
-        let (base, tri_h) = if ideal_h_from_w <= h {
-            // width-constrained
-            (w, ideal_h_from_w)
+        let ideal_w_from_h = h * (3.0_f32.sqrt() / 2.0);
+        let (base, tri_h) = if ideal_w_from_h <= w {
+            (h, ideal_w_from_h)
         } else {
-            // height-constrained — derive base from available height
-            let b = h / (3.0_f32.sqrt() / 2.0);
-            (b, h)
+            let b = w / (3.0_f32.sqrt() / 2.0);
+            (b, w)
         };
 
-        let left = x + (w - base) * 0.5;
-        let right = left + base;
-        let top_y = y + (h - tri_h) * 0.5;
-        let bot_y = top_y + tri_h;
+        let top_y = y + (h - base) * 0.5;
+        let bot_y = top_y + base;
+        let left = x + (w - tri_h) * 0.5;
+        let right = left + tri_h;
 
-        // tl - top-left  (top edge, left end)
-        // tr - top-right (top edge, right end)
-        // bp - bottom apex (pointing downward)
+        // tl - top-left (left edge, top end)
+        // bl - bottom-left (left edge, bottom end)
+        // rp - right apex (pointing right)
         let tl = (left, top_y);
-        let tr = (right, top_y);
-        let bp = (left + base * 0.5, bot_y);
+        let bl = (left, bot_y);
+        let rp = (right, top_y + base * 0.5);
 
         let no_flags = vg::gradient_shader::Flags::empty();
 
         let face = {
             let mut pb = vg::PathBuilder::new();
             pb.move_to(tl);
-            pb.line_to(tr);
-            pb.line_to(bp);
+            pb.line_to(bl);
+            pb.line_to(rp);
             pb.close();
             pb.snapshot()
         };
 
-        let cx_f = left + base * 0.5;
-        let cy_f = top_y + tri_h / 3.0;
+        let cx_f = left + tri_h / 3.0;
+        let cy_f = top_y + base * 0.5;
         let grad_r = base.max(tri_h) * 0.9;
 
         match self.state {
@@ -77,7 +75,7 @@ impl View for Heart {
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
                 if let Some(shader) = vg::gradient_shader::linear(
-                    ((cx_f, top_y), (cx_f, bot_y)),
+                    ((left, cy_f), (rp.0, cy_f)),
                     colors.as_ref(),
                     Some(pos.as_ref()),
                     vg::TileMode::Clamp,
@@ -170,7 +168,7 @@ impl View for Heart {
             let top_edge = {
                 let mut pb = vg::PathBuilder::new();
                 pb.move_to(tl);
-                pb.line_to(tr);
+                pb.line_to(bl);
                 pb.snapshot()
             };
             canvas.draw_path(&top_edge, &top_paint);
@@ -191,7 +189,7 @@ impl View for Heart {
             let bot_edges = {
                 let mut pb = vg::PathBuilder::new();
                 pb.move_to(tl);
-                pb.line_to(bp);
+                pb.line_to(rp);
                 pb.snapshot()
             };
             canvas.draw_path(&bot_edges, &bot_paint);
@@ -211,8 +209,8 @@ impl View for Heart {
 
             let right_edge = {
                 let mut pb = vg::PathBuilder::new();
-                pb.move_to(tr);
-                pb.line_to(bp);
+                pb.move_to(bl);
+                pb.line_to(rp);
                 pb.snapshot()
             };
             canvas.draw_path(&right_edge, &side_paint);

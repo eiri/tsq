@@ -1,16 +1,31 @@
 use vizia::prelude::*;
 
 const STYLE: &str = r#"
-    .ellipse-button {
-        width: 42px;
-        height: 29px;
+    .ellipse-recess {
+        width: 62px;
+        height: 32px;
         corner-radius: 50%;
-        border: 6px solid #900;
-        background-image: linear-gradient(to top, #ccc 30%, #eee 80%, #fff);
+        shadow:
+            3px 3px 12px 0px #999999 inset,
+            -1px -1px 8px 0px #000000 inset;
+    }
+
+    .ellipse-button {
+        width: 48px;
+        height: 18px;
+        corner-radius: 50%;
+        background-image: linear-gradient(to top, #bfbfbf 50%, #7f7f7f 80%, #000000 90%);
+        cursor: pointer;
     }
 
     .ellipse-button:active, .ellipse-button:checked {
-        background-image: linear-gradient(to top, #bbb 80%, #ddd 90%, #eee);
+        background-image: linear-gradient(to top, #bfbfbf 40%, #7f7f7f 70%, #444444 90%);
+    }
+
+    .ellipse-label {
+        font-family: "Futura", sans-serif;
+        font-family: 9px;
+        color: MidnightBlue;
     }
 "#;
 
@@ -29,13 +44,11 @@ impl EllipseButton {
         }
     }
 
-    #[expect(dead_code)]
     pub fn width(mut self, width: Units) -> Self {
         self.width = width;
         self
     }
 
-    #[expect(dead_code)]
     pub fn height(mut self, height: Units) -> Self {
         self.height = height;
         self
@@ -52,17 +65,22 @@ impl EllipseButton {
         let pressed = Signal::new(false);
 
         VStack::new(cx, move |cx| {
-            Button::new(cx, |cx| Label::new(cx, " "))
-                .checked(pressed)
-                .on_press(move |_ex| {
-                    pressed.set(false);
-                })
-                .on_press_down(move |ex| {
-                    pressed.set(true);
-                    on_press(ex);
-                })
-                .class("ellipse-button");
-            Label::new(cx, label).font_size(12.0);
+            HStack::new(cx, |cx| {
+                Button::new(cx, |cx| Label::new(cx, " "))
+                    .checked(pressed)
+                    .on_press(move |_ex| {
+                        pressed.set(false);
+                    })
+                    .on_press_down(move |ex| {
+                        pressed.set(true);
+                        on_press(ex);
+                    })
+                    .class("ellipse-button");
+            })
+            .class("ellipse-recess")
+            .alignment(Alignment::Center);
+
+            Label::new(cx, label).class("ellipse-label");
         })
         .width(self.width)
         .height(self.height)

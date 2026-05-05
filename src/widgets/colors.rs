@@ -21,8 +21,8 @@ pub const PIP_ON_G: u8 = 5;
 pub const PIP_ON_B: u8 = 3;
 pub const PIP_ON_G_BRIGHT: u8 = 65; // PIP_ON_G + 60
 
-pub const PIP_RIM_0: (u8, u8, u8, u8) = (0, 200, 10, 200);
-pub const PIP_RIM_1: (u8, u8, u8, u8) = (120, 220, 20, 220);
+pub const PIP_RIM_0: (u8, u8, u8, u8) = (0, 255, 160, 0);
+pub const PIP_RIM_1: (u8, u8, u8, u8) = (130, 255, 200, 20);
 
 pub const PIP_BORDER_TOP: (u8, u8, u8, u8) = (180, 210, 205, 160);
 pub const PIP_BORDER_BOT: (u8, u8, u8, u8) = (120, 30, 28, 18);
@@ -33,9 +33,9 @@ pub const HEART_OFF_1: (u8, u8, u8, u8) = (255, 40, 39, 26);
 pub const HEART_OFF_2: (u8, u8, u8, u8) = (255, 22, 21, 12);
 
 pub const HEART_ON_R: u8 = 255;
-pub const HEART_ON_G: u8 = 140;
-pub const HEART_ON_B: u8 = 0;
-pub const HEART_ON_G_BRIGHT: u8 = 200;
+pub const HEART_ON_G: u8 = 5;
+pub const HEART_ON_B: u8 = 3;
+pub const HEART_ON_G_BRIGHT: u8 = 65;
 
 pub const HEART_RIM_0: (u8, u8, u8, u8) = (0, 255, 160, 0);
 pub const HEART_RIM_1: (u8, u8, u8, u8) = (130, 255, 200, 20);
