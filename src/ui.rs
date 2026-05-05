@@ -1,23 +1,29 @@
 use vizia::prelude::*;
 
 use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
-use crate::widgets::{EllipseButton, Pip, PipState, RoundButton, StepDot, StepDotState};
+use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
 const HALF: usize = STEPS / 2;
 
 const STYLE: &str = r#"
-    .seq {
-        background-color: #ffffe0;
-        border: 10px solid #900;
-        outline: 6px #ffffe0;
-        corner-radius: 0px;
-        shadow:
-            0px 0px 6px 8px #eeeed0,
-            0px 0px 6px 11px #ddddc0,
-            0px 0px 6px 14px #ccccb0,
-            0px 0px 6px 17px #bbbba1,
-            0px 0px 6px 20px #abab92;
+    .page-stack {
+
+    }
+    .steps {
+
+    }
+    .controls {
+
+    }
+    .container {
+        border: 12px solid Wheat;
+
+        corner-bottom-right-shape: bevel;
+        corner-bottom-right-radius: 10%;
+        /* h-shadow v-shadow blur spread color inset */
+        shadow: 0px 16px 8px -8px #ccc;
+        background-color: Beige;
     }
 "#;
 
@@ -109,6 +115,15 @@ fn step_color_hihat(step: &Option<HihatVoice>, is_current: bool) -> StepDotState
 
 fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::ops::Range<usize>) {
     HStack::new(cx, move |cx| {
+        let heart_state = if current == 0 {
+            HeartState::On
+        } else {
+            HeartState::Off
+        };
+        Heart::new(cx, heart_state)
+            .width(Pixels(18.0))
+            .height(Pixels(18.0));
+
         for i in range {
             let step_dot_state = step_color_bool(steps[i], i == current);
             StepDot::new(cx, step_dot_state)
@@ -116,8 +131,10 @@ fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::o
                 .height(Pixels(18.0));
         }
     })
-    .height(Pixels(36.0))
+    .class("steps")
     .alignment(Alignment::Center)
+    .width(Pixels(300.0))
+    .height(Pixels(54.0))
     .horizontal_gap(Pixels(36.0));
 }
 
@@ -128,6 +145,15 @@ fn hihat_step_row(
     range: std::ops::Range<usize>,
 ) {
     HStack::new(cx, move |cx| {
+        let heart_state = if current == 0 {
+            HeartState::On
+        } else {
+            HeartState::Off
+        };
+        Heart::new(cx, heart_state)
+            .width(Pixels(18.0))
+            .height(Pixels(18.0));
+
         for i in range {
             let step_dot_state = step_color_hihat(&steps[i], i == current);
             StepDot::new(cx, step_dot_state)
@@ -135,8 +161,10 @@ fn hihat_step_row(
                 .height(Pixels(18.0));
         }
     })
-    .height(Pixels(36.0))
+    .class("steps")
     .alignment(Alignment::Center)
+    .width(Pixels(300.0))
+    .height(Pixels(54.0))
     .horizontal_gap(Pixels(36.0));
 }
 
@@ -195,40 +223,13 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         .build(cx);
 
         HStack::new(cx, |cx| {
-            VStack::new(cx, |cx| {
-                VStack::new(cx, move |cx| {
-                    Binding::new(cx, selected_track, move |cx| {
-                        let selected = selected_track.get();
-                        HStack::new(cx, move |cx| {
-                            for i in 0..NUM_TRACKS {
-                                let state = if i == selected {
-                                    PipState::On
-                                } else {
-                                    PipState::Off
-                                };
-                                Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
-                            }
-                        })
-                        .height(Pixels(64.0))
-                        .alignment(Alignment::Center)
-                        .horizontal_gap(Pixels(9.0));
-                    });
-                })
-                .padding_top(Pixels(7.0))
-                .alignment(Alignment::TopCenter)
-                .height(Pixels(200.0));
-
-                RoundButton::new("TRACK")
-                    .height(Pixels(100.0))
-                    .build(cx, |ex| ex.emit(AppEvent::NextTrack));
-            })
-            .alignment(Alignment::Center);
-
-            VStack::new(cx, |cx| {
-                Binding::new(cx, current_step, move |cx| {
-                    Binding::new(cx, selected_track, move |cx| {
-                        let current = current_step.get();
-                        let selected = selected_track.get();
+            Binding::new(cx, current_step, move |cx| {
+                Binding::new(cx, selected_track, move |cx| {
+                    let current = current_step.get();
+                    let selected = selected_track.get();
+                    // central part
+                    VStack::new(cx, move |cx| {
+                        // steps
                         match selected {
                             0 => {
                                 Binding::new(cx, kick, move |cx| {
@@ -260,36 +261,71 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                             }
                             _ => unreachable!(),
                         }
-                    });
+                    })
+                    .class("steps")
+                    .width(Stretch(3.0))
+                    .padding_top(Pixels(18.0))
+                    .alignment(Alignment::TopLeft);
                 });
-            })
-            .width(Percentage(50.0))
-            .height(Percentage(70.0))
-            .alignment(Alignment::Center)
-            .vertical_gap(Pixels(18.0))
-            .class("seq");
+            });
 
+            // controls
             VStack::new(cx, |cx| {
-                VStack::new(cx, move |cx| {
-                    EllipseButton::new("PLAY").build(cx, |ex| ex.emit(AppEvent::TogglePlay));
+                // page stack
+                HStack::new(cx, |cx| {
+                    Binding::new(cx, current_step, move |cx| {
+                        let current = current_step.get();
+                        for i in 0..NUM_TRACKS {
+                            let state = if i == current / 2 {
+                                PipState::On
+                            } else {
+                                PipState::Off
+                            };
+                            Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
+                        }
+                    });
                 })
-                .padding_top(Pixels(7.0))
-                .alignment(Alignment::TopCenter)
-                .height(Pixels(200.0));
-                RoundButton::new("RAND")
-                    .height(Pixels(100.0))
-                    .build(cx, |ex| ex.emit(AppEvent::Randomize));
+                .class("page-stack")
+                .alignment(Alignment::Left)
+                .width(Pixels(154.0))
+                .height(Pixels(44.0))
+                .horizontal_gap(Pixels(4.0));
+
+                HStack::new(cx, |cx| {
+                    EllipseButton::new("TRACK")
+                        .width(Pixels(80.0))
+                        .height(Pixels(64.0))
+                        .build(cx, |ex| ex.emit(AppEvent::NextTrack));
+
+                    EllipseButton::new("PLAY")
+                        .width(Pixels(80.0))
+                        .height(Pixels(64.0))
+                        .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
+                })
+                .alignment(Alignment::Left)
+                .width(Pixels(170.0))
+                .height(Pixels(64.0));
+
+                HStack::new(cx, |cx| {
+                    EllipseButton::new("RAND")
+                        .width(Pixels(80.0))
+                        .height(Pixels(64.0))
+                        .build(cx, |ex| ex.emit(AppEvent::Randomize));
+                })
+                .alignment(Alignment::Left)
+                .width(Pixels(170.0))
+                .height(Pixels(64.0));
             })
-            .alignment(Alignment::Center);
+            .class("controls")
+            .width(Stretch(1.0))
+            .padding_bottom(Pixels(18.0))
+            .alignment(Alignment::BottomRight);
         })
-        .alignment(Alignment::Center)
-        .background_color(Color::lightyellow())
-        .border_color(Color::darkred())
-        .border_width(Pixels(10.0))
-        .corner_radius(Pixels(6.0));
+        .class("container")
+        .alignment(Alignment::BottomCenter);
     })
     .title("tsq")
-    .inner_size((720, 360))
-    .resizable(false)
+    .inner_size((840, 360))
+    .resizable(true)
     .run()
 }
