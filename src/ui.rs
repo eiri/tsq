@@ -4,26 +4,16 @@ use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
-const HALF: usize = STEPS / 2;
 
 const STYLE: &str = r#"
-    .page-stack {
-
-    }
-    .steps {
-
-    }
-    .controls {
-
-    }
     .container {
-        border: 12px solid Wheat;
+        border: 12px solid Maroon;
 
         corner-bottom-right-shape: bevel;
         corner-bottom-right-radius: 10%;
         /* h-shadow v-shadow blur spread color inset */
         shadow: 0px 16px 8px -8px #ccc;
-        background-color: Beige;
+        background-color: Ivory;
     }
 "#;
 
@@ -115,15 +105,6 @@ fn step_color_hihat(step: &Option<HihatVoice>, is_current: bool) -> StepDotState
 
 fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::ops::Range<usize>) {
     HStack::new(cx, move |cx| {
-        let heart_state = if current == 0 {
-            HeartState::On
-        } else {
-            HeartState::Off
-        };
-        Heart::new(cx, heart_state)
-            .width(Pixels(18.0))
-            .height(Pixels(18.0));
-
         for i in range {
             let step_dot_state = step_color_bool(steps[i], i == current);
             StepDot::new(cx, step_dot_state)
@@ -131,9 +112,8 @@ fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::o
                 .height(Pixels(18.0));
         }
     })
-    .class("steps")
     .alignment(Alignment::Center)
-    .width(Pixels(300.0))
+    // .width(Pixels(450.0))
     .height(Pixels(54.0))
     .horizontal_gap(Pixels(36.0));
 }
@@ -145,15 +125,6 @@ fn hihat_step_row(
     range: std::ops::Range<usize>,
 ) {
     HStack::new(cx, move |cx| {
-        let heart_state = if current == 0 {
-            HeartState::On
-        } else {
-            HeartState::Off
-        };
-        Heart::new(cx, heart_state)
-            .width(Pixels(18.0))
-            .height(Pixels(18.0));
-
         for i in range {
             let step_dot_state = step_color_hihat(&steps[i], i == current);
             StepDot::new(cx, step_dot_state)
@@ -161,9 +132,8 @@ fn hihat_step_row(
                 .height(Pixels(18.0));
         }
     })
-    .class("steps")
     .alignment(Alignment::Center)
-    .width(Pixels(300.0))
+    // .width(Pixels(450.0))
     .height(Pixels(54.0))
     .horizontal_gap(Pixels(36.0));
 }
@@ -223,58 +193,35 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         .build(cx);
 
         HStack::new(cx, |cx| {
-            Binding::new(cx, current_step, move |cx| {
-                Binding::new(cx, selected_track, move |cx| {
-                    let current = current_step.get();
-                    let selected = selected_track.get();
-                    // central part
-                    VStack::new(cx, move |cx| {
-                        // steps
-                        match selected {
-                            0 => {
-                                Binding::new(cx, kick, move |cx| {
-                                    let k = kick.get();
-                                    bool_step_row(cx, &k, current, 0..HALF);
-                                    bool_step_row(cx, &k, current, HALF..STEPS);
-                                });
-                            }
-                            1 => {
-                                Binding::new(cx, snare, move |cx| {
-                                    let s = snare.get();
-                                    bool_step_row(cx, &s, current, 0..HALF);
-                                    bool_step_row(cx, &s, current, HALF..STEPS);
-                                });
-                            }
-                            2 => {
-                                Binding::new(cx, hihat, move |cx| {
-                                    let h = hihat.get();
-                                    hihat_step_row(cx, &h, current, 0..HALF);
-                                    hihat_step_row(cx, &h, current, HALF..STEPS);
-                                });
-                            }
-                            3 => {
-                                Binding::new(cx, tone, move |cx| {
-                                    let t = tone.get();
-                                    bool_step_row(cx, &t, current, 0..HALF);
-                                    bool_step_row(cx, &t, current, HALF..STEPS);
-                                });
-                            }
-                            _ => unreachable!(),
-                        }
-                    })
-                    .class("steps")
-                    .width(Stretch(3.0))
-                    .padding_top(Pixels(18.0))
-                    .alignment(Alignment::TopLeft);
-                });
+            Binding::new(cx, selected_track, move |cx| {
+                let selected = selected_track.get();
+
+                // tracks
+                VStack::new(cx, move |cx| {
+                    for i in 0..NUM_TRACKS {
+                        let heart_state = if selected == i {
+                            HeartState::On
+                        } else {
+                            HeartState::Off
+                        };
+                        Heart::new(cx, heart_state)
+                            .width(Pixels(18.0))
+                            .height(Pixels(18.0));
+                    }
+                })
+                .alignment(Alignment::TopCenter)
+                .width(Pixels(36.0))
+                .padding_top(Pixels(66.0))
+                .vertical_gap(Pixels(36.0));
             });
 
-            // controls
-            VStack::new(cx, |cx| {
-                // page stack
-                HStack::new(cx, |cx| {
-                    Binding::new(cx, current_step, move |cx| {
-                        let current = current_step.get();
+            Binding::new(cx, current_step, move |cx| {
+                let current = current_step.get();
+
+                // sequencer
+                VStack::new(cx, move |cx| {
+                    // page stack
+                    HStack::new(cx, |cx| {
                         for i in 0..NUM_TRACKS {
                             let state = if i == current / 2 {
                                 PipState::On
@@ -283,49 +230,77 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                             };
                             Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
                         }
+                    })
+                    .alignment(Alignment::Center)
+                    .width(Pixels(216.0))
+                    .height(Pixels(36.0))
+                    .horizontal_gap(Pixels(36.0));
+                    // steps
+                    Binding::new(cx, kick, move |cx| {
+                        let k = kick.get();
+                        bool_step_row(cx, &k, current, 0..STEPS);
+                    });
+
+                    Binding::new(cx, snare, move |cx| {
+                        let s = snare.get();
+                        bool_step_row(cx, &s, current, 0..STEPS);
+                    });
+
+                    Binding::new(cx, hihat, move |cx| {
+                        let h = hihat.get();
+                        hihat_step_row(cx, &h, current, 0..STEPS);
+                    });
+
+                    Binding::new(cx, tone, move |cx| {
+                        let t = tone.get();
+                        bool_step_row(cx, &t, current, 0..STEPS);
                     });
                 })
-                .class("page-stack")
-                .alignment(Alignment::Left)
-                .width(Pixels(154.0))
-                .height(Pixels(44.0))
-                .horizontal_gap(Pixels(4.0));
+                .alignment(Alignment::TopLeft)
+                .width(Pixels(432.0))
+                .padding_top(Pixels(12.0));
+            });
 
+            VStack::new(cx, |_cx| {}).width(Pixels(36.0));
+
+            // controls
+            VStack::new(cx, |cx| {
                 HStack::new(cx, |cx| {
                     EllipseButton::new("TRACK")
-                        .width(Pixels(80.0))
-                        .height(Pixels(64.0))
+                        .width(Pixels(54.0))
+                        .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::NextTrack));
 
                     EllipseButton::new("PLAY")
-                        .width(Pixels(80.0))
-                        .height(Pixels(64.0))
+                        .width(Pixels(54.0))
+                        .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
                 })
                 .alignment(Alignment::Left)
-                .width(Pixels(170.0))
-                .height(Pixels(64.0));
+                .width(Pixels(135.0))
+                .height(Pixels(54.0))
+                .horizontal_gap(Pixels(9.0));
 
                 HStack::new(cx, |cx| {
                     EllipseButton::new("RAND")
-                        .width(Pixels(80.0))
-                        .height(Pixels(64.0))
+                        .width(Pixels(54.0))
+                        .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::Randomize));
                 })
                 .alignment(Alignment::Left)
-                .width(Pixels(170.0))
-                .height(Pixels(64.0));
+                .width(Pixels(135.0))
+                .height(Pixels(54.0))
+                .horizontal_gap(Pixels(9.0));
             })
-            .class("controls")
-            .width(Stretch(1.0))
-            .padding_bottom(Pixels(18.0))
-            .alignment(Alignment::BottomRight);
+            .width(Pixels(135.0))
+            .padding_top(Pixels(48.0))
+            .alignment(Alignment::TopRight);
         })
         .class("container")
         .alignment(Alignment::BottomCenter);
     })
     .title("tsq")
-    .inner_size((840, 360))
+    .inner_size((792, 312))
     .resizable(true)
     .run()
 }

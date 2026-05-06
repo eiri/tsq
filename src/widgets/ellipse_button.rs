@@ -2,8 +2,8 @@ use vizia::prelude::*;
 
 const STYLE: &str = r#"
     .ellipse-recess {
-        width: 62px;
-        height: 32px;
+        width: 54px;
+        height: 27px;
         corner-radius: 50%;
         shadow:
             3px 3px 12px 0px #999999 inset,
@@ -11,7 +11,7 @@ const STYLE: &str = r#"
     }
 
     .ellipse-button {
-        width: 48px;
+        width: 36px;
         height: 18px;
         corner-radius: 50%;
         background-image: linear-gradient(to top, #bfbfbf 50%, #7f7f7f 80%, #000000 90%);
@@ -24,7 +24,7 @@ const STYLE: &str = r#"
 
     .ellipse-label {
         font-family: "Futura", sans-serif;
-        font-family: 9px;
+        font-size: 11px;
         color: MidnightBlue;
     }
 "#;
@@ -82,9 +82,8 @@ impl EllipseButton {
 
             Label::new(cx, label).class("ellipse-label");
         })
-        .width(self.width)
-        .height(self.height)
         .alignment(Alignment::BottomCenter)
-        .gap(Pixels(6.0));
+        .width(self.width)
+        .height(self.height);
     }
 }
