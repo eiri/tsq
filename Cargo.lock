@@ -3615,6 +3615,7 @@ dependencies = [
  "fastrand",
  "fundsp",
  "vizia",
+ "ym2149",
 ]
 
 [[package]]
@@ -4506,6 +4507,22 @@ name = "xxhash-rust"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+
+[[package]]
+name = "ym2149"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd2271de7272f422fe8f1d9c7c3ecd7ae8f684cb8ca3f79703008b8a68f73a61"
+dependencies = [
+ "thiserror 1.0.69",
+ "ym2149-common",
+]
+
+[[package]]
+name = "ym2149-common"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dd3a5849ef612e3df0b869ab7df6ac50270018f6f366d07d66a719be41222b"
 
 [[package]]
 name = "zbus"
