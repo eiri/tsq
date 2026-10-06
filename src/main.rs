@@ -5,6 +5,7 @@ mod widgets;
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SampleFormat, SizedSample};
 
 use sequencer::{AudioClock, HihatVoice, STEPS, SharedState, ToneVoice, new_shared_state};
 use voices::{Voice, hihat_closed, hihat_open, kick, snare, square_tone, tone};
@@ -38,21 +39,54 @@ fn render_track(track: &mut Vec<(Voice, f64)>, sr: f64) -> f32 {
     out
 }
 
+fn write_frame<T: SizedSample + FromSample<f32>>(frame: &mut [T], sample: f32) {
+    // Integer conversion requires values below +1, including 24-bit samples.
+    let value = T::from_sample(sample.clamp(-1.0, 1.0 - f32::EPSILON));
+    frame.fill(value);
+}
+
 fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or_else(|| anyhow::anyhow!("no output device"))?;
     let config = device.default_output_config()?;
-    let sr = config.sample_rate() as f64;
-    let channels = config.channels() as usize;
+
+    // Build with the device's sample type; float output is not always supported.
+    match config.sample_format() {
+        SampleFormat::I8 => output_stream::<i8>(&device, config.into(), shared),
+        SampleFormat::I16 => output_stream::<i16>(&device, config.into(), shared),
+        SampleFormat::I24 => output_stream::<cpal::I24>(&device, config.into(), shared),
+        SampleFormat::I32 => output_stream::<i32>(&device, config.into(), shared),
+        SampleFormat::I64 => output_stream::<i64>(&device, config.into(), shared),
+        SampleFormat::U8 => output_stream::<u8>(&device, config.into(), shared),
+        SampleFormat::U16 => output_stream::<u16>(&device, config.into(), shared),
+        SampleFormat::U24 => output_stream::<cpal::U24>(&device, config.into(), shared),
+        SampleFormat::U32 => output_stream::<u32>(&device, config.into(), shared),
+        SampleFormat::U64 => output_stream::<u64>(&device, config.into(), shared),
+        SampleFormat::F32 => output_stream::<f32>(&device, config.into(), shared),
+        SampleFormat::F64 => output_stream::<f64>(&device, config.into(), shared),
+        format => anyhow::bail!("unsupported audio sample format: {format}"),
+    }
+}
+
+fn output_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    shared: SharedState,
+) -> Result<cpal::Stream>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let sr = config.sample_rate as f64;
+    let channels = config.channels as usize;
 
     let mut clock = AudioClock::new(sr);
     let mut tracks: [Vec<(Voice, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 
     let stream = device.build_output_stream(
-        config.into(),
-        move |data: &mut [f32], _| {
+        config,
+        move |data: &mut [T], _| {
             {
                 let mut s = shared.lock().unwrap();
                 if s.reset {
@@ -103,9 +137,7 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
                     + render_track(&mut tracks[3], sr))
                     * 0.5;
 
-                for ch in frame.iter_mut() {
-                    *ch = sample;
-                }
+                write_frame(frame, sample);
             }
         },
         |err| eprintln!("audio error: {err}"),
@@ -125,6 +157,41 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_samples<T>()
+    where
+        T: SizedSample + FromSample<f32> + std::fmt::Debug,
+        f32: FromSample<T>,
+    {
+        let mut frame = [T::EQUILIBRIUM; 2];
+        for sample in [-2.0, -0.5, 0.0, 0.5, 2.0] {
+            write_frame(&mut frame, sample);
+            assert_eq!(frame[0], frame[1]);
+
+            let output = frame[0].to_sample::<f32>();
+            assert!((-1.0..1.0).contains(&output));
+            assert!((output - sample.clamp(-1.0, 1.0 - f32::EPSILON)).abs() < 0.01);
+        }
+
+        write_frame(&mut frame, 0.0);
+        assert_eq!(frame, [T::EQUILIBRIUM; 2]);
+    }
+
+    #[test]
+    fn output_sample_formats() {
+        check_samples::<i8>();
+        check_samples::<i16>();
+        check_samples::<cpal::I24>();
+        check_samples::<i32>();
+        check_samples::<i64>();
+        check_samples::<u8>();
+        check_samples::<u16>();
+        check_samples::<cpal::U24>();
+        check_samples::<u32>();
+        check_samples::<u64>();
+        check_samples::<f32>();
+        check_samples::<f64>();
+    }
 
     #[test]
     fn voice_pitch_at_device_rate() {
