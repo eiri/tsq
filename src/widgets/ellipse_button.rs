@@ -18,7 +18,7 @@ const STYLE: &str = r#"
         cursor: pointer;
     }
 
-    .ellipse-button:active, .ellipse-button:checked {
+    .ellipse-button:active {
         background-image: linear-gradient(to top, #bfbfbf 40%, #7f7f7f 70%, #444444 90%);
     }
 
@@ -62,19 +62,11 @@ impl EllipseButton {
 
         let label = self.label;
 
-        let pressed = Signal::new(false);
-
         VStack::new(cx, move |cx| {
             HStack::new(cx, |cx| {
+                // Built-in active styling clears even when a press is cancelled.
                 Button::new(cx, |cx| Label::new(cx, " "))
-                    .checked(pressed)
-                    .on_press(move |_ex| {
-                        pressed.set(false);
-                    })
-                    .on_press_down(move |ex| {
-                        pressed.set(true);
-                        on_press(ex);
-                    })
+                    .on_press_down(on_press)
                     .class("ellipse-button");
             })
             .class("ellipse-recess")
