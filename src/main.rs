@@ -19,6 +19,12 @@ const TONE_FREQS: [f32; STEPS] = [
 //     440.0 * 2.0_f64.powf((midi as f64 - 69.0) / 12.0)
 // }
 
+fn add_voice(track: &mut Vec<(Voice, f64)>, mut voice: Voice, ttl: f64, sr: f64) {
+    // Match the device rate to preserve pitch and envelope timing.
+    voice.set_sample_rate(sr);
+    track.push((voice, ttl));
+}
+
 fn render_track(track: &mut Vec<(Voice, f64)>, sr: f64) -> f32 {
     let dt = 1.0 / sr;
     let mut out = 0.0f32;
@@ -45,7 +51,7 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
     let mut tracks: [Vec<(Voice, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 
     let stream = device.build_output_stream(
-        &config.into(),
+        config.into(),
         move |data: &mut [f32], _| {
             {
                 let mut s = shared.lock().unwrap();
@@ -63,24 +69,24 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
                         if pattern.kick[step] {
-                            tracks[0].push((kick(1.0), 0.4));
+                            add_voice(&mut tracks[0], kick(1.0), 0.4, sr);
                         }
                         if pattern.snare[step] {
-                            tracks[1].push((snare(0.4), 0.3));
+                            add_voice(&mut tracks[1], snare(0.4), 0.3, sr);
                         }
                         if let Some(hv) = &pattern.hihat[step] {
                             let voice = match hv {
                                 HihatVoice::Open => hihat_open(1.0),
                                 HihatVoice::Closed => hihat_closed(1.0),
                             };
-                            tracks[2].push((voice, 0.8));
+                            add_voice(&mut tracks[2], voice, 0.8, sr);
                         }
                         if pattern.tone[step] {
                             let (voice, ttl) = match pattern.tone_voice {
                                 ToneVoice::Sine => (tone(TONE_FREQS[step], 1.0), 2.0),
                                 ToneVoice::Square => (square_tone(TONE_FREQS[step], 1.0), 0.5),
                             };
-                            tracks[3].push((voice, ttl));
+                            add_voice(&mut tracks[3], voice, ttl, sr);
                         }
                         let mut s = shared.lock().unwrap();
                         s.current_step = step;
@@ -114,4 +120,28 @@ fn main() -> Result<()> {
     let shared = new_shared_state();
     let _stream = build_audio_stream(shared.clone())?;
     ui::run(shared).map_err(|e| anyhow::anyhow!("{e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_pitch_at_device_rate() {
+        for sr in [44_100.0, 48_000.0, 96_000.0] {
+            let mut track = Vec::new();
+            add_voice(&mut track, tone(440.0, 1.0), 2.0, sr);
+
+            // A 440 Hz tone completes 44 cycles in 100 ms at any device rate.
+            let samples: Vec<_> = (0..(sr * 0.1) as usize)
+                .map(|_| render_track(&mut track, sr))
+                .collect();
+            let cycles = samples
+                .windows(2)
+                .filter(|s| s[0] < 0.0 && s[1] >= 0.0)
+                .count();
+
+            assert!((43..=44).contains(&cycles), "incorrect pitch at {sr} Hz");
+        }
+    }
 }
