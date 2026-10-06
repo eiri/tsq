@@ -1,3 +1,5 @@
+#[allow(dead_code)] // The PSG engine replaces the current audio path in the next steps.
+mod psg;
 mod sequencer;
 mod ui;
 mod voices;

@@ -16,3 +16,4 @@ crossterm = "0.29"
 fastrand = "2.5"
 fundsp = "0.23"
 vizia = { version = "0.4", features = ["winit"] }
+ym2149 = "0.9.1"
