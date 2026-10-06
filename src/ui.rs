@@ -30,13 +30,16 @@ struct AppState {
 
 impl AppState {
     fn sync_from_shared(&self) {
-        let s = self.shared.lock().unwrap();
-        self.current_step.set(s.current_step);
-        self.kick.set(s.pattern.kick.to_vec());
-        self.snare.set(s.pattern.snare.to_vec());
-        self.hihat.set(s.pattern.hihat.to_vec());
-        self.tone.set(s.pattern.tone.to_vec());
-        self.playing.set(s.playing);
+        // Release the audio-state lock before notifying UI subscribers.
+        let s = self.shared.lock().unwrap().clone();
+
+        // Unchanged timer ticks must not rebuild the sequencer views.
+        self.current_step.set_if_changed(s.current_step);
+        self.kick.set_if_changed(s.pattern.kick.to_vec());
+        self.snare.set_if_changed(s.pattern.snare.to_vec());
+        self.hihat.set_if_changed(s.pattern.hihat.to_vec());
+        self.tone.set_if_changed(s.pattern.tone.to_vec());
+        self.playing.set_if_changed(s.playing);
     }
 }
 
@@ -303,4 +306,73 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
     .inner_size((792, 312))
     .resizable(true)
     .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn sync_skips_unchanged_values() {
+        let shared = crate::sequencer::new_shared_state();
+        let state = AppState {
+            selected_track: Signal::new(0),
+            current_step: Signal::new(0),
+            kick: Signal::new(Vec::new()),
+            snare: Signal::new(Vec::new()),
+            hihat: Signal::new(Vec::new()),
+            tone: Signal::new(Vec::new()),
+            playing: Signal::new(false),
+            shared: shared.clone(),
+        };
+        state.sync_from_shared();
+
+        let signals = (
+            state.current_step,
+            state.kick,
+            state.snare,
+            state.hihat,
+            state.tone,
+            state.playing,
+        );
+        let updates = Rc::new(Cell::new(0));
+        let count = updates.clone();
+        let audio_state = shared.clone();
+        UpdaterEffect::new(
+            move || {
+                (
+                    signals.0.get(),
+                    signals.1.get(),
+                    signals.2.get(),
+                    signals.3.get(),
+                    signals.4.get(),
+                    signals.5.get(),
+                )
+            },
+            move |_| {
+                assert!(audio_state.try_lock().is_ok());
+                count.set(count.get() + 1);
+            },
+        );
+
+        state.sync_from_shared();
+        state.sync_from_shared();
+        assert_eq!(updates.get(), 0);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.current_step = 1;
+            s.pattern.kick[2] = true;
+            s.playing = true;
+        }
+        state.sync_from_shared();
+        assert_eq!(updates.get(), 3);
+        assert_eq!(state.current_step.get(), 1);
+        assert!(state.kick.get()[2]);
+        assert!(state.playing.get());
+
+        state.sync_from_shared();
+        assert_eq!(updates.get(), 3);
+    }
 }
