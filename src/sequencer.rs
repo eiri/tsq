@@ -110,15 +110,16 @@ impl AudioClock {
     }
 
     pub fn advance(&mut self, bpm: f64) -> Option<usize> {
-        let threshold = self.step_samples(bpm);
+        // Trigger at the start of each interval, including the first sample.
+        let triggered = (self.sample_counter == 0).then_some(self.step);
         self.sample_counter += 1;
-        if self.sample_counter >= threshold {
+
+        if self.sample_counter >= self.step_samples(bpm) {
             self.sample_counter = 0;
             self.step = (self.step + 1) % STEPS;
-            Some(self.step)
-        } else {
-            None
         }
+
+        triggered
     }
 }
 
@@ -162,14 +163,11 @@ mod tests {
         let mut clock = AudioClock::new(sr);
         let threshold = clock.step_samples(bpm);
 
-        let mut fired = false;
-        for _ in 0..threshold {
-            if clock.advance(bpm).is_some() {
-                fired = true;
-            }
+        assert_eq!(clock.advance(bpm), Some(0));
+        for _ in 1..threshold {
+            assert_eq!(clock.advance(bpm), None);
         }
-        assert!(fired, "clock must fire exactly once per step window");
-        assert_eq!(clock.step, 1);
+        assert_eq!(clock.advance(bpm), Some(1));
     }
 
     #[test]
@@ -183,6 +181,18 @@ mod tests {
             clock.advance(bpm);
         }
         assert_eq!(clock.step, 0);
+    }
+
+    #[test]
+    fn clock_restart_triggers_zero() {
+        let mut clock = AudioClock::new(48000.0);
+        for _ in 0..12001 {
+            clock.advance(120.0);
+        }
+
+        clock.sample_counter = 0;
+        clock.step = 0;
+        assert_eq!(clock.advance(120.0), Some(0));
     }
 
     #[test]
