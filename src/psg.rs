@@ -1,16 +1,12 @@
 use ym2149::{Ym2149, Ym2149Backend};
 
+use crate::sequencer::MelodyStyle;
+
 const MASTER_CLOCK: u32 = 2_000_000;
 const KICK: usize = 0;
 const SNARE: usize = 1;
 const HAT: usize = 2;
 const MELODY: usize = 3;
-
-#[derive(Clone, Copy)]
-pub enum MelodyStyle {
-    Pluck,
-    Sustain,
-}
 
 #[derive(Default)]
 struct Note {
@@ -42,17 +38,28 @@ pub struct PsgEngine {
 impl PsgEngine {
     pub fn new(sample_rate: u32) -> Self {
         // Separate the snare and hi-hat so they do not share a noise period.
-        let mut chips = std::array::from_fn(|_| Ym2149::with_clocks(MASTER_CLOCK, sample_rate));
-        chips[0].write_register(6, 8);
-        chips[0].write_register(7, 0x2c); // Kick tone A; snare tone and noise B.
-        chips[1].write_register(6, 3);
-        chips[1].write_register(7, 0x35); // Hi-hat noise A; melody tone B.
-
-        Self {
+        let chips = std::array::from_fn(|_| Ym2149::with_clocks(MASTER_CLOCK, sample_rate));
+        let mut engine = Self {
             chips,
             notes: std::array::from_fn(|_| Note::default()),
             sample_rate,
-        }
+        };
+        engine.configure();
+        engine
+    }
+
+    pub fn reset(&mut self) {
+        // Clear active notes and restore register routing after a stop or randomize.
+        self.chips.iter_mut().for_each(Ym2149::reset);
+        self.notes = std::array::from_fn(|_| Note::default());
+        self.configure();
+    }
+
+    fn configure(&mut self) {
+        self.chips[0].write_register(6, 8);
+        self.chips[0].write_register(7, 0x2c); // Kick tone A; snare tone and noise B.
+        self.chips[1].write_register(6, 3);
+        self.chips[1].write_register(7, 0x35); // Hi-hat noise A; melody tone B.
     }
 
     pub fn kick(&mut self) {
@@ -207,6 +214,25 @@ mod tests {
 
         assert_eq!(closed.chips[1].read_register(8), 0);
         assert!(open.chips[1].read_register(8) > 0);
+    }
+
+    #[test]
+    fn reset_silences_tracks() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.kick();
+        engine.snare();
+        engine.hihat(true);
+        engine.melody(440.0, MelodyStyle::Sustain);
+        engine.next_sample();
+        engine.reset();
+        engine.next_sample();
+
+        for chip in &engine.chips {
+            assert_eq!(chip.read_register(8), 0);
+            assert_eq!(chip.read_register(9), 0);
+        }
+        assert_eq!(engine.chips[0].read_register(7), 0x2c);
+        assert_eq!(engine.chips[1].read_register(7), 0x35);
     }
 
     #[test]
