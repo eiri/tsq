@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 pub const STEPS: usize = 8;
 pub const DEFAULT_BPM: f64 = 120.0;
 
-#[derive(Clone)]
-pub enum ToneVoice {
-    Sine,
-    Square,
+#[derive(Clone, Copy)]
+pub enum MelodyStyle {
+    Pluck,
+    Sustain,
 }
 
 #[derive(Clone, PartialEq)]
@@ -21,7 +21,7 @@ pub struct Pattern {
     pub snare: [bool; STEPS],
     pub hihat: [Option<HihatVoice>; STEPS],
     pub tone: [bool; STEPS],
-    pub tone_voice: ToneVoice,
+    pub melody_style: MelodyStyle,
 }
 
 impl Default for Pattern {
@@ -40,7 +40,7 @@ impl Default for Pattern {
                 Some(HihatVoice::Open),
             ],
             tone: [true, false, true, false, false, true, false, true],
-            tone_voice: ToneVoice::Sine,
+            melody_style: MelodyStyle::Pluck,
         }
     }
 }
@@ -55,10 +55,10 @@ pub fn random_pattern() -> Pattern {
             _ => None,
         }),
         tone: std::array::from_fn(|_| fastrand::bool()),
-        tone_voice: if fastrand::bool() {
-            ToneVoice::Sine
+        melody_style: if fastrand::bool() {
+            MelodyStyle::Pluck
         } else {
-            ToneVoice::Square
+            MelodyStyle::Sustain
         },
     }
 }

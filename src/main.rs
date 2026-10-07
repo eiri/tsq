@@ -1,7 +1,7 @@
-#[allow(dead_code)] // The PSG engine replaces the current audio path in the next steps.
 mod psg;
 mod sequencer;
 mod ui;
+#[allow(dead_code)] // Remove the old voices with fundsp in the cleanup step.
 mod voices;
 mod widgets;
 
@@ -9,37 +9,13 @@ use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-use sequencer::{AudioClock, HihatVoice, STEPS, SharedState, ToneVoice, new_shared_state};
-use voices::{Voice, hihat_closed, hihat_open, kick, snare, square_tone, tone};
+use psg::PsgEngine;
+use sequencer::{AudioClock, HihatVoice, STEPS, SharedState, new_shared_state};
 
 // C major scale from middle C (C4) to C5, one note per step
 const TONE_FREQS: [f32; STEPS] = [
     261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
 ];
-
-// C4 -> 60
-// fn note_to_freq(midi: u8) -> f64 {
-//     440.0 * 2.0_f64.powf((midi as f64 - 69.0) / 12.0)
-// }
-
-fn add_voice(track: &mut Vec<(Voice, f64)>, mut voice: Voice, ttl: f64, sr: f64) {
-    // Match the device rate to preserve pitch and envelope timing.
-    voice.set_sample_rate(sr);
-    track.push((voice, ttl));
-}
-
-fn render_track(track: &mut Vec<(Voice, f64)>, sr: f64) -> f32 {
-    let dt = 1.0 / sr;
-    let mut out = 0.0f32;
-    track.retain_mut(|(voice, ttl)| {
-        let mut buf = [0.0f32; 1];
-        voice.tick(&[], &mut buf);
-        out += buf[0];
-        *ttl -= dt;
-        *ttl > 0.0
-    });
-    out
-}
 
 fn write_frame<T: SizedSample + FromSample<f32>>(frame: &mut [T], sample: f32) {
     // Integer conversion requires values below +1, including 24-bit samples.
@@ -80,49 +56,36 @@ fn output_stream<T>(
 where
     T: SizedSample + FromSample<f32>,
 {
-    let sr = config.sample_rate as f64;
+    let mut clock = AudioClock::new(config.sample_rate as f64);
+    let mut engine = PsgEngine::new(config.sample_rate);
     let channels = config.channels as usize;
-
-    let mut clock = AudioClock::new(sr);
-    let mut tracks: [Vec<(Voice, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            {
+            let (bpm, pattern, playing, reset) = {
                 let mut s = shared.lock().unwrap();
-                if s.reset {
-                    tracks.iter_mut().for_each(|t| t.clear());
-                    s.reset = false;
-                }
-            }
-            let (bpm, pattern, playing) = {
-                let s = shared.lock().unwrap();
-                (s.bpm, s.pattern.clone(), s.playing)
+                let reset = std::mem::take(&mut s.reset);
+                (s.bpm, s.pattern.clone(), s.playing, reset)
             };
+            if reset {
+                engine.reset();
+            }
 
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
                         if pattern.kick[step] {
-                            add_voice(&mut tracks[0], kick(1.0), 0.4, sr);
+                            engine.kick();
                         }
                         if pattern.snare[step] {
-                            add_voice(&mut tracks[1], snare(0.4), 0.3, sr);
+                            engine.snare();
                         }
                         if let Some(hv) = &pattern.hihat[step] {
-                            let voice = match hv {
-                                HihatVoice::Open => hihat_open(1.0),
-                                HihatVoice::Closed => hihat_closed(1.0),
-                            };
-                            add_voice(&mut tracks[2], voice, 0.8, sr);
+                            engine.hihat(*hv == HihatVoice::Open);
                         }
                         if pattern.tone[step] {
-                            let (voice, ttl) = match pattern.tone_voice {
-                                ToneVoice::Sine => (tone(TONE_FREQS[step], 1.0), 2.0),
-                                ToneVoice::Square => (square_tone(TONE_FREQS[step], 1.0), 0.5),
-                            };
-                            add_voice(&mut tracks[3], voice, ttl, sr);
+                            engine.melody(TONE_FREQS[step], pattern.melody_style);
                         }
                         let mut s = shared.lock().unwrap();
                         s.current_step = step;
@@ -133,13 +96,7 @@ where
                     clock.step = 0;
                 }
 
-                let sample = (render_track(&mut tracks[0], sr)
-                    + render_track(&mut tracks[1], sr)
-                    + render_track(&mut tracks[2], sr)
-                    + render_track(&mut tracks[3], sr))
-                    * 0.5;
-
-                write_frame(frame, sample);
+                write_frame(frame, if playing { engine.next_sample() } else { 0.0 });
             }
         },
         |err| eprintln!("audio error: {err}"),
@@ -193,24 +150,5 @@ mod tests {
         check_samples::<u64>();
         check_samples::<f32>();
         check_samples::<f64>();
-    }
-
-    #[test]
-    fn voice_pitch_at_device_rate() {
-        for sr in [44_100.0, 48_000.0, 96_000.0] {
-            let mut track = Vec::new();
-            add_voice(&mut track, tone(440.0, 1.0), 2.0, sr);
-
-            // A 440 Hz tone completes 44 cycles in 100 ms at any device rate.
-            let samples: Vec<_> = (0..(sr * 0.1) as usize)
-                .map(|_| render_track(&mut track, sr))
-                .collect();
-            let cycles = samples
-                .windows(2)
-                .filter(|s| s[0] < 0.0 && s[1] >= 0.0)
-                .count();
-
-            assert!((43..=44).contains(&cycles), "incorrect pitch at {sr} Hz");
-        }
     }
 }
