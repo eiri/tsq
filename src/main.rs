@@ -1,8 +1,6 @@
 mod psg;
 mod sequencer;
 mod ui;
-#[allow(dead_code)] // Remove the old voices with fundsp in the cleanup step.
-mod voices;
 mod widgets;
 
 use anyhow::Result;
