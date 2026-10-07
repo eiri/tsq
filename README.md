@@ -1,4 +1,5 @@
 # tsq
+
 [![CI](https://github.com/eiri/tsq/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/eiri/tsq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/eiri/tsq)](LICENSE)
 
@@ -8,25 +9,25 @@ A toy 8-step sequencer.
 
 ## Summary
 
-8-step sequencer that loops a rhythmic pattern, with a kick drum, open and closed hi-hat, and a melodic tone (sine or square) voice. BPM is fixed at 120. Patterns can be randomized at runtime.
+Two emulated YM2149 sound chips. 8-step sequencer loops a pattern of kick, snare, hi-hat, and melody. The tempo is fixed at 120 BPM and you can randomize the pattern during playback.
 
 ## Tracks
 
 - kick
 - snare
 - open/closed hi-hat
-- tone (sine or square)
+- melody (pluck or sustain)
 
-The tone track plays notes from the C major scale (C4–C5), one per step.
+The melody plays one C major note per step, from C4 to C5.
 
 ## Controls
 
-| Key | Action |
-|-----|--------|
-| `p` | start/stop play |
-| `t` | choose instrument track |
-| `r` | randomize pattern |
-| `CMD+Q` | quit |
+| Key     | Action                  |
+| ------- | ----------------------- |
+| `p`     | start/stop play         |
+| `t`     | choose instrument track |
+| `r`     | randomize pattern       |
+| `CMD+Q` | quit                    |
 
 ## Build & Run
 
@@ -38,4 +39,4 @@ $ cargo run
 
 ## License
 
-[MIT](https://github.com/eiri/tsq/blob/main/LICENSE)
+[MIT](LICENSE)
