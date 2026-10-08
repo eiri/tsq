@@ -9,6 +9,18 @@ pub enum MelodyStyle {
     Sustain,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MelodyVoice {
+    M1,
+    M2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MelodyStep {
+    pub freq: f32,
+    pub voice: MelodyVoice,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drum {
     Kick,
@@ -20,6 +32,7 @@ pub enum Drum {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audition {
     Melody,
+    Melody2,
     Arpeggio,
     Bass,
     Drum(Drum),
@@ -27,7 +40,7 @@ pub enum Audition {
 
 #[derive(Clone)]
 pub struct Pattern {
-    pub melody: [Option<f32>; STEPS],
+    pub melody: [Option<MelodyStep>; STEPS],
     pub arpeggio: [Option<[f32; 3]>; STEPS],
     pub bass: [Option<f32>; STEPS],
     pub drums: [Option<Drum>; STEPS],
@@ -41,7 +54,19 @@ const CHORD: [f32; 3] = [261.63, 329.63, 392.0];
 impl Default for Pattern {
     fn default() -> Self {
         Self {
-            melody: std::array::from_fn(|i| [0, 2, 5, 7].contains(&i).then_some(MELODY[i])),
+            melody: std::array::from_fn(|i| {
+                let voice = if [0, 2, 5, 7].contains(&i) {
+                    MelodyVoice::M1
+                } else if [1, 3, 6].contains(&i) {
+                    MelodyVoice::M2
+                } else {
+                    return None;
+                };
+                Some(MelodyStep {
+                    freq: MELODY[i],
+                    voice,
+                })
+            }),
             arpeggio: std::array::from_fn(|i| (i % 2 == 0).then_some(CHORD)),
             // Leave channel C free on these steps so the bass can sound.
             bass: std::array::from_fn(|i| [3, 5, 7].contains(&i).then_some(130.81)),
@@ -62,7 +87,16 @@ impl Default for Pattern {
 
 pub fn random_pattern() -> Pattern {
     Pattern {
-        melody: std::array::from_fn(|i| fastrand::bool().then_some(MELODY[i])),
+        melody: std::array::from_fn(|i| {
+            fastrand::bool().then(|| MelodyStep {
+                freq: MELODY[i],
+                voice: if fastrand::bool() {
+                    MelodyVoice::M1
+                } else {
+                    MelodyVoice::M2
+                },
+            })
+        }),
         arpeggio: std::array::from_fn(|_| fastrand::bool().then_some(CHORD)),
         bass: std::array::from_fn(|_| fastrand::bool().then_some(130.81)),
         drums: std::array::from_fn(|_| match fastrand::u8(0..5) {
@@ -153,6 +187,14 @@ mod tests {
         assert_eq!(p.arpeggio.len(), 8);
         assert_eq!(p.bass.len(), 8);
         assert_eq!(p.drums.len(), 8);
+    }
+
+    #[test]
+    fn melody_steps_choose_one_variation() {
+        let pattern = Pattern::default();
+        assert_eq!(pattern.melody[0].unwrap().voice, MelodyVoice::M1);
+        assert_eq!(pattern.melody[1].unwrap().voice, MelodyVoice::M2);
+        assert!(pattern.melody[4].is_none());
     }
 
     #[test]
