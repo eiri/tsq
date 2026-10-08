@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 pub const STEPS: usize = 8;
 pub const DEFAULT_BPM: f64 = 120.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MelodyStyle {
     Pluck,
     Sustain,
@@ -111,6 +111,25 @@ pub fn random_pattern() -> Pattern {
         } else {
             MelodyStyle::Sustain
         },
+    }
+}
+
+pub fn random_track(pattern: &mut Pattern, track: usize) {
+    // Retry if the selected track happens to match its old pattern.
+    loop {
+        let next = random_pattern();
+        match track {
+            0 if pattern.melody != next.melody || pattern.melody_style != next.melody_style => {
+                pattern.melody = next.melody;
+                pattern.melody_style = next.melody_style;
+            }
+            1 if pattern.arpeggio != next.arpeggio => pattern.arpeggio = next.arpeggio,
+            2 if pattern.bass != next.bass => pattern.bass = next.bass,
+            3 if pattern.drums != next.drums => pattern.drums = next.drums,
+            0..=3 => continue,
+            _ => return,
+        }
+        return;
     }
 }
 
@@ -279,6 +298,23 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.bpm, 140.0);
         assert_eq!(s.pattern.drums[2], Some(Drum::Kick));
+    }
+
+    #[test]
+    fn random_track_changes_only_selected_row() {
+        for track in 0..4 {
+            let mut pattern = Pattern::default();
+            let before = pattern.clone();
+            random_track(&mut pattern, track);
+
+            assert_eq!(
+                pattern.melody == before.melody && pattern.melody_style == before.melody_style,
+                track != 0
+            );
+            assert_eq!(pattern.arpeggio == before.arpeggio, track != 1);
+            assert_eq!(pattern.bass == before.bass, track != 2);
+            assert_eq!(pattern.drums == before.drums, track != 3);
+        }
     }
 
     #[test]

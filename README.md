@@ -20,7 +20,7 @@ Bass and drums share one chip channel, so a drum can interrupt a bass note.
 | ------- | ------------------------- |
 | `p`     | Start or stop playback    |
 | `t`     | Move the track marker     |
-| `r`     | Make a new random pattern |
+| `r`     | Randomize selected track  |
 | `CMD+Q` | Quit                      |
 
 ## Build & Run
