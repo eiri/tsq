@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 pub const STEPS: usize = 8;
+pub const TRACKS: usize = 4;
 pub const DEFAULT_BPM: f64 = 120.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,6 +140,7 @@ pub struct SequencerState {
     pub bpm: f64,
     pub current_step: usize,
     pub playing: bool,
+    pub muted: [bool; TRACKS],
     pub reset: bool,
     pub audition: Option<Audition>,
 }
@@ -150,6 +152,7 @@ impl Default for SequencerState {
             bpm: DEFAULT_BPM,
             current_step: 0,
             playing: false,
+            muted: [false; TRACKS],
             reset: false,
             audition: None,
         }
@@ -284,6 +287,7 @@ mod tests {
         assert!(paused);
         assert_eq!(s.bpm, 120.0);
         assert_eq!(s.current_step, 0);
+        assert_eq!(s.muted, [false; TRACKS]);
     }
 
     #[test]

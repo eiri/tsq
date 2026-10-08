@@ -1,9 +1,7 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, random_track};
+use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, TRACKS, random_track};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
-
-const NUM_TRACKS: usize = 4;
 
 const STYLE: &str = r#"
     .container {
@@ -15,6 +13,7 @@ const STYLE: &str = r#"
         shadow: 0px 16px 8px -8px #ccc;
         background-color: Ivory;
     }
+
 "#;
 
 struct AppState {
@@ -25,6 +24,7 @@ struct AppState {
     bass: Signal<Vec<bool>>,
     drums: Signal<Vec<Option<Drum>>>,
     playing: Signal<bool>,
+    muted: Signal<[bool; TRACKS]>,
     shared: SharedState,
 }
 
@@ -48,6 +48,15 @@ impl AppState {
             .set_if_changed(s.pattern.bass.iter().map(Option::is_some).collect());
         self.drums.set_if_changed(s.pattern.drums.to_vec());
         self.playing.set_if_changed(s.playing);
+        self.muted.set_if_changed(s.muted);
+    }
+
+    fn toggle_mute(&self) {
+        let track = self.selected_track.get();
+        let mut state = self.shared.lock().unwrap();
+        state.muted[track] = !state.muted[track];
+        drop(state);
+        self.sync_from_shared();
     }
 }
 
@@ -56,6 +65,7 @@ enum AppEvent {
     Tick,
     Randomize,
     NextTrack,
+    ToggleMute,
     TogglePlay,
     Audition(Audition),
 }
@@ -64,6 +74,7 @@ enum AppEvent {
 enum KeymapAction {
     OnP,
     OnT,
+    OnM,
     OnR,
 }
 
@@ -81,8 +92,9 @@ impl Model for AppState {
                 self.sync_from_shared();
             }
             AppEvent::NextTrack => {
-                self.selected_track.update(|t| *t = (*t + 1) % NUM_TRACKS);
+                self.selected_track.update(|t| *t = (*t + 1) % TRACKS);
             }
+            AppEvent::ToggleMute => self.toggle_mute(),
             AppEvent::TogglePlay => {
                 {
                     let mut s = self.shared.lock().unwrap();
@@ -97,6 +109,15 @@ impl Model for AppState {
                 self.shared.lock().unwrap().audition = Some(*request);
             }
         });
+    }
+}
+
+fn track_state(selected: usize, muted: bool, row: usize) -> HeartState {
+    match (muted, selected == row) {
+        (false, true) => HeartState::On,
+        (false, false) => HeartState::Dim,
+        (true, true) => HeartState::HalfDim,
+        (true, false) => HeartState::Off,
     }
 }
 
@@ -177,7 +198,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
     Application::new(move |cx| {
         cx.add_stylesheet(STYLE).expect("loads the style");
 
-        let (selected_track, current_step, melody, arpeggio, bass, drums, playing) = {
+        let (selected_track, current_step, melody, arpeggio, bass, drums, playing, muted) = {
             let s = shared_clone.lock().unwrap();
             (
                 Signal::new(0),
@@ -193,6 +214,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 Signal::new(s.pattern.bass.iter().map(Option::is_some).collect()),
                 Signal::new(s.pattern.drums.to_vec()),
                 Signal::new(s.playing),
+                Signal::new(s.muted),
             )
         };
 
@@ -204,6 +226,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             bass,
             drums,
             playing,
+            muted,
             shared: shared_clone.clone(),
         }
         .build(cx);
@@ -225,6 +248,10 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 KeymapEntry::new(KeymapAction::OnT, |ex| ex.emit(AppEvent::NextTrack)),
             ),
             (
+                KeyChord::new(Modifiers::empty(), Code::KeyM),
+                KeymapEntry::new(KeymapAction::OnM, |ex| ex.emit(AppEvent::ToggleMute)),
+            ),
+            (
                 KeyChord::new(Modifiers::empty(), Code::KeyR),
                 KeymapEntry::new(KeymapAction::OnR, |ex| ex.emit(AppEvent::Randomize)),
             ),
@@ -232,26 +259,25 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         .build(cx);
 
         HStack::new(cx, |cx| {
-            Binding::new(cx, selected_track, move |cx| {
-                let selected = selected_track.get();
+            Binding::new(cx, muted, move |cx| {
+                let marks = muted.get();
+                Binding::new(cx, selected_track, move |cx| {
+                    let selected = selected_track.get();
 
-                // tracks
-                VStack::new(cx, move |cx| {
-                    for i in 0..NUM_TRACKS {
-                        let heart_state = if selected == i {
-                            HeartState::On
-                        } else {
-                            HeartState::Off
-                        };
-                        Heart::new(cx, heart_state)
-                            .width(Pixels(18.0))
-                            .height(Pixels(18.0));
-                    }
-                })
-                .alignment(Alignment::TopCenter)
-                .width(Pixels(36.0))
-                .padding_top(Pixels(66.0))
-                .vertical_gap(Pixels(36.0));
+                    // Selection and mute each change the marker's light level.
+                    VStack::new(cx, move |cx| {
+                        for i in 0..TRACKS {
+                            let heart_state = track_state(selected, marks[i], i);
+                            Heart::new(cx, heart_state)
+                                .width(Pixels(18.0))
+                                .height(Pixels(18.0));
+                        }
+                    })
+                    .alignment(Alignment::TopCenter)
+                    .width(Pixels(36.0))
+                    .padding_top(Pixels(66.0))
+                    .vertical_gap(Pixels(36.0));
+                });
             });
 
             VStack::new(cx, |cx| {
@@ -309,29 +335,29 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             VStack::new(cx, |_cx| {}).width(Pixels(36.0));
 
             VStack::new(cx, |cx| {
-                // Keep transport controls above the sound previews.
+                // Match the four-column preview grid, with one blank row between.
                 HStack::new(cx, |cx| {
                     EllipseButton::new("TRACK")
                         .width(Pixels(54.0))
                         .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::NextTrack));
+                    EllipseButton::new("MUTE")
+                        .width(Pixels(54.0))
+                        .height(Pixels(54.0))
+                        .build(cx, |ex| ex.emit(AppEvent::ToggleMute));
+                    EllipseButton::new("RAND")
+                        .width(Pixels(54.0))
+                        .height(Pixels(54.0))
+                        .build(cx, |ex| ex.emit(AppEvent::Randomize));
                     EllipseButton::new("PLAY")
                         .width(Pixels(54.0))
                         .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
                 })
                 .width(Pixels(216.0))
-                .height(Pixels(54.0))
-                .horizontal_gap(Pixels(9.0));
-
-                HStack::new(cx, |cx| {
-                    EllipseButton::new("RAND")
-                        .width(Pixels(54.0))
-                        .height(Pixels(54.0))
-                        .build(cx, |ex| ex.emit(AppEvent::Randomize));
-                })
-                .width(Pixels(216.0))
                 .height(Pixels(54.0));
+
+                VStack::new(cx, |_cx| {}).height(Pixels(54.0));
 
                 // Eight sounds occupy two rows in a separate stack.
                 VStack::new(cx, |cx| {
@@ -385,6 +411,14 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     #[test]
+    fn muted_marker_takes_priority() {
+        assert_eq!(track_state(1, false, 1), HeartState::On);
+        assert_eq!(track_state(1, false, 0), HeartState::Dim);
+        assert_eq!(track_state(1, true, 1), HeartState::HalfDim);
+        assert_eq!(track_state(1, true, 0), HeartState::Off);
+    }
+
+    #[test]
     fn sync_skips_unchanged_values() {
         let shared = crate::sequencer::new_shared_state();
         let state = AppState {
@@ -395,6 +429,7 @@ mod tests {
             bass: Signal::new(Vec::new()),
             drums: Signal::new(Vec::new()),
             playing: Signal::new(false),
+            muted: Signal::new([false; TRACKS]),
             shared: shared.clone(),
         };
         state.sync_from_shared();
@@ -406,6 +441,7 @@ mod tests {
             state.bass,
             state.drums,
             state.playing,
+            state.muted,
         );
         let updates = Rc::new(Cell::new(0));
         let count = updates.clone();
@@ -419,6 +455,7 @@ mod tests {
                     signals.3.get(),
                     signals.4.get(),
                     signals.5.get(),
+                    signals.6.get(),
                 )
             },
             move |_| {
@@ -448,5 +485,15 @@ mod tests {
 
         state.sync_from_shared();
         assert_eq!(updates.get(), 3);
+
+        // Mute changes only the chosen row and not its steps.
+        let bass = shared.lock().unwrap().pattern.bass;
+        state.selected_track.set(2);
+        state.toggle_mute();
+        assert_eq!(state.muted.get(), [false, false, true, false]);
+        assert_eq!(shared.lock().unwrap().pattern.bass, bass);
+        assert_eq!(updates.get(), 4);
+        state.toggle_mute();
+        assert_eq!(state.muted.get(), [false; TRACKS]);
     }
 }

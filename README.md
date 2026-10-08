@@ -19,7 +19,8 @@ Bass and drums share one chip channel, so a drum can interrupt a bass note.
 | Key     | Action                    |
 | ------- | ------------------------- |
 | `p`     | Start or stop playback    |
-| `t`     | Move the track marker     |
+| `t`     | Select the next track     |
+| `m`     | Mute or unmute that track |
 | `r`     | Randomize selected track  |
 | `CMD+Q` | Quit                      |
 

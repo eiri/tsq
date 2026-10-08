@@ -9,6 +9,8 @@ use super::colors::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HeartState {
     Off,
+    HalfDim,
+    Dim,
     On,
 }
 
@@ -92,19 +94,24 @@ impl View for Heart {
                 }
             }
 
-            HeartState::On => {
+            HeartState::HalfDim | HeartState::Dim | HeartState::On => {
+                // Scale the lit face without changing its shape or border.
+                let brightness = match self.state {
+                    HeartState::On => 1.0,
+                    HeartState::Dim => 0.76,
+                    HeartState::HalfDim => 0.52,
+                    HeartState::Off => 0.0,
+                };
                 let focal_x = cx_f - grad_r * 0.18;
                 let focal_y = cy_f - grad_r * 0.20;
+                let red = (HEART_ON_R as f32 * brightness) as u8;
+                let green = (HEART_ON_G as f32 * brightness) as u8;
+                let bright_green = (HEART_ON_G_BRIGHT as f32 * brightness) as u8;
 
                 let colors = [
-                    argb(255, HEART_ON_R, HEART_ON_G_BRIGHT, HEART_ON_B),
-                    argb(255, HEART_ON_R, HEART_ON_G, HEART_ON_B),
-                    argb(
-                        255,
-                        (HEART_ON_R / 3).max(15),
-                        (HEART_ON_G / 4).max(10),
-                        HEART_ON_B,
-                    ),
+                    argb(255, red, bright_green, HEART_ON_B),
+                    argb(255, red, green, HEART_ON_B),
+                    argb(255, (red / 3).max(15), (green / 4).max(10), HEART_ON_B),
                 ];
                 let pos: [f32; 3] = [0.0, 0.5, 1.0];
 
@@ -128,7 +135,12 @@ impl View for Heart {
 
                 let rim_colors = [
                     argb(HEART_RIM_0.0, HEART_RIM_0.1, HEART_RIM_0.2, HEART_RIM_0.3),
-                    argb(HEART_RIM_1.0, HEART_RIM_1.1, HEART_RIM_1.2, HEART_RIM_1.3),
+                    argb(
+                        (HEART_RIM_1.0 as f32 * brightness) as u8,
+                        HEART_RIM_1.1,
+                        HEART_RIM_1.2,
+                        HEART_RIM_1.3,
+                    ),
                 ];
                 let rim_pos: [f32; 2] = [0.65, 1.0];
 
