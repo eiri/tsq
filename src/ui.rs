@@ -261,10 +261,10 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
 
                     // sequencer
                     VStack::new(cx, move |cx| {
-                        // page stack
+                        // One small light marks each step above its column.
                         HStack::new(cx, |cx| {
-                            for i in 0..STEPS / 2 {
-                                let state = if i == current / 2 {
+                            for i in 0..STEPS {
+                                let state = if i == current {
                                     PipState::On
                                 } else {
                                     PipState::Off
@@ -273,7 +273,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                             }
                         })
                         .alignment(Alignment::Center)
-                        .width(Pixels(216.0))
+                        .width(Pixels(432.0))
                         .height(Pixels(36.0))
                         .horizontal_gap(Pixels(36.0));
                         // steps
