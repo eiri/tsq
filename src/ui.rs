@@ -1,6 +1,6 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{Drum, STEPS, SharedState, random_pattern};
+use crate::sequencer::{Audition, Drum, STEPS, SharedState, random_pattern};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
@@ -52,6 +52,7 @@ enum AppEvent {
     Randomize,
     NextTrack,
     TogglePlay,
+    Audition(Audition),
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -87,6 +88,9 @@ impl Model for AppState {
                     }
                 }
                 self.sync_from_shared();
+            }
+            AppEvent::Audition(request) => {
+                self.shared.lock().unwrap().audition = Some(*request);
             }
         });
     }
@@ -221,69 +225,73 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 .vertical_gap(Pixels(36.0));
             });
 
-            Binding::new(cx, current_step, move |cx| {
-                let current = current_step.get();
+            VStack::new(cx, |cx| {
+                Binding::new(cx, current_step, move |cx| {
+                    let current = current_step.get();
 
-                // sequencer
-                VStack::new(cx, move |cx| {
-                    // page stack
-                    HStack::new(cx, |cx| {
-                        for i in 0..NUM_TRACKS {
-                            let state = if i == current / 2 {
-                                PipState::On
-                            } else {
-                                PipState::Off
-                            };
-                            Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
-                        }
+                    // sequencer
+                    VStack::new(cx, move |cx| {
+                        // page stack
+                        HStack::new(cx, |cx| {
+                            for i in 0..NUM_TRACKS {
+                                let state = if i == current / 2 {
+                                    PipState::On
+                                } else {
+                                    PipState::Off
+                                };
+                                Pip::new(cx, state).width(Pixels(18.0)).height(Pixels(9.0));
+                            }
+                        })
+                        .alignment(Alignment::Center)
+                        .width(Pixels(216.0))
+                        .height(Pixels(36.0))
+                        .horizontal_gap(Pixels(36.0));
+                        // steps
+                        Binding::new(cx, melody, move |cx| {
+                            let k = melody.get();
+                            bool_step_row(cx, &k, current, 0..STEPS);
+                        });
+
+                        Binding::new(cx, arpeggio, move |cx| {
+                            let s = arpeggio.get();
+                            bool_step_row(cx, &s, current, 0..STEPS);
+                        });
+
+                        Binding::new(cx, bass, move |cx| {
+                            let b = bass.get();
+                            bool_step_row(cx, &b, current, 0..STEPS);
+                        });
+
+                        Binding::new(cx, drums, move |cx| {
+                            let d = drums.get();
+                            drum_step_row(cx, &d, current, 0..STEPS);
+                        });
                     })
-                    .alignment(Alignment::Center)
-                    .width(Pixels(216.0))
-                    .height(Pixels(36.0))
-                    .horizontal_gap(Pixels(36.0));
-                    // steps
-                    Binding::new(cx, melody, move |cx| {
-                        let k = melody.get();
-                        bool_step_row(cx, &k, current, 0..STEPS);
-                    });
-
-                    Binding::new(cx, arpeggio, move |cx| {
-                        let s = arpeggio.get();
-                        bool_step_row(cx, &s, current, 0..STEPS);
-                    });
-
-                    Binding::new(cx, drums, move |cx| {
-                        let h = drums.get();
-                        drum_step_row(cx, &h, current, 0..STEPS);
-                    });
-
-                    Binding::new(cx, bass, move |cx| {
-                        let t = bass.get();
-                        bool_step_row(cx, &t, current, 0..STEPS);
-                    });
-                })
-                .alignment(Alignment::TopLeft)
-                .width(Pixels(432.0))
-                .padding_top(Pixels(12.0));
-            });
+                    .alignment(Alignment::TopLeft)
+                    .width(Pixels(432.0))
+                    .height(Pixels(264.0))
+                    .padding_top(Pixels(12.0));
+                });
+            })
+            .width(Pixels(432.0))
+            .height(Pixels(264.0))
+            .alignment(Alignment::TopLeft);
 
             VStack::new(cx, |_cx| {}).width(Pixels(36.0));
 
-            // controls
             VStack::new(cx, |cx| {
+                // Keep transport controls above the sound previews.
                 HStack::new(cx, |cx| {
                     EllipseButton::new("TRACK")
                         .width(Pixels(54.0))
                         .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::NextTrack));
-
                     EllipseButton::new("PLAY")
                         .width(Pixels(54.0))
                         .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::TogglePlay));
                 })
-                .alignment(Alignment::Left)
-                .width(Pixels(135.0))
+                .width(Pixels(216.0))
                 .height(Pixels(54.0))
                 .horizontal_gap(Pixels(9.0));
 
@@ -293,20 +301,50 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                         .height(Pixels(54.0))
                         .build(cx, |ex| ex.emit(AppEvent::Randomize));
                 })
-                .alignment(Alignment::Left)
-                .width(Pixels(135.0))
-                .height(Pixels(54.0))
-                .horizontal_gap(Pixels(9.0));
+                .width(Pixels(216.0))
+                .height(Pixels(54.0));
+
+                // Seven sounds occupy two rows in a separate stack.
+                VStack::new(cx, |cx| {
+                    for row in [
+                        &[
+                            ("M1", Audition::Melody),
+                            ("A", Audition::Arpeggio),
+                            ("B", Audition::Bass),
+                            ("K", Audition::Drum(Drum::Kick)),
+                        ][..],
+                        &[
+                            ("S", Audition::Drum(Drum::Snare)),
+                            ("CH", Audition::Drum(Drum::ClosedHat)),
+                            ("OH", Audition::Drum(Drum::OpenHat)),
+                        ][..],
+                    ] {
+                        HStack::new(cx, |cx| {
+                            for &(label, voice) in row {
+                                EllipseButton::new(label)
+                                    .width(Pixels(54.0))
+                                    .height(Pixels(54.0))
+                                    .build(cx, move |ex| ex.emit(AppEvent::Audition(voice)));
+                            }
+                        })
+                        .width(Pixels(216.0))
+                        .height(Pixels(54.0));
+                    }
+                })
+                .width(Pixels(216.0))
+                .height(Pixels(108.0));
             })
-            .width(Pixels(135.0))
+            .width(Pixels(216.0))
+            .height(Pixels(264.0))
             .padding_top(Pixels(48.0))
-            .alignment(Alignment::TopRight);
+            .alignment(Alignment::TopLeft);
         })
         .class("container")
-        .alignment(Alignment::BottomCenter);
+        .padding_bottom(Pixels(18.0))
+        .alignment(Alignment::TopCenter);
     })
     .title("tsq")
-    .inner_size((792, 312))
+    .inner_size((792, 360))
     .resizable(true)
     .run()
 }
