@@ -33,6 +33,11 @@ pub struct PsgEngine {
     notes: [Note; 3],
     drum: Option<Drum>,
     sample_rate: u32,
+    arp_notes: [f32; 3],
+    arp_age: u32,
+    arp_phase: f32,
+    bass_freq: f32,
+    bass_age: u32,
 }
 
 impl PsgEngine {
@@ -42,6 +47,11 @@ impl PsgEngine {
             notes: std::array::from_fn(|_| Note::default()),
             drum: None,
             sample_rate,
+            arp_notes: [0.0; 3],
+            arp_age: 0,
+            arp_phase: 0.0,
+            bass_freq: 0.0,
+            bass_age: 0,
         };
         engine.configure();
         engine
@@ -51,6 +61,11 @@ impl PsgEngine {
         self.chip.reset();
         self.notes = std::array::from_fn(|_| Note::default());
         self.drum = None;
+        self.arp_age = 0;
+        self.arp_phase = 0.0;
+        self.bass_age = 0;
+        self.bass_freq = 0.0;
+        self.arp_notes = [0.0; 3];
         self.configure();
     }
 
@@ -117,14 +132,64 @@ impl PsgEngine {
         self.notes[MELODY].start(self.samples(duration), 11);
     }
 
+    pub fn arpeggio(&mut self, notes: [f32; 3]) {
+        self.arp_notes = notes;
+        self.arp_age = 0;
+        self.arp_phase = 0.0;
+        self.notes[ARPEGGIO].start(self.samples(0.5), 9);
+        self.set_pitch(ARPEGGIO, notes[0]);
+    }
+
+    pub fn bass(&mut self, freq: f32) {
+        // Bass never cuts short a drum; the next bass note may try again.
+        if self.drum.is_some() && self.notes[BASS].left > 0 {
+            return;
+        }
+        self.drum = None;
+        self.chip.write_register(7, 0x38);
+        self.bass_freq = freq;
+        self.bass_age = 0;
+        self.notes[BASS].start(self.samples(0.45), 10);
+        self.set_pitch(BASS, freq);
+    }
+
     pub fn next_sample(&mut self) -> f32 {
         // Release the borrowed channel when the drum ends.
         if self.notes[BASS].left == 0 && self.drum.take().is_some() {
             self.chip.write_register(7, 0x38);
         }
 
-        for (channel, note) in self.notes.iter_mut().enumerate() {
-            self.chip.write_register(8 + channel as u8, note.level());
+        let mut levels = std::array::from_fn::<_, 3, _>(|i| self.notes[i].level());
+
+        // Fast chord cycling suggests a chord on a single square-wave channel.
+        if self.notes[ARPEGGIO].left > 0 {
+            let slice = (self.sample_rate / 24).max(1);
+            let index = (self.arp_age / slice) as usize % 3;
+            if self.arp_age % slice == 0 {
+                self.set_pitch(ARPEGGIO, self.arp_notes[index]);
+                self.arp_phase = 0.0;
+            }
+            // Gate the chip's square tone at a changing duty (not native PWM).
+            let sweep = (self.arp_age % (self.sample_rate / 5).max(1)) as f32
+                / (self.sample_rate / 5).max(1) as f32;
+            let duty = 0.25 + 0.5 * (1.0 - (2.0 * sweep - 1.0).abs());
+            if self.arp_phase > duty {
+                levels[ARPEGGIO] = 0;
+            }
+            self.arp_phase =
+                (self.arp_phase + self.arp_notes[index] / self.sample_rate as f32).fract();
+            self.arp_age += 1;
+        }
+
+        // Shape bass with stepped volume while retaining the chip's square tone.
+        if self.drum.is_none() && self.notes[BASS].left > 0 {
+            let phase = (self.bass_age as f32 * self.bass_freq / self.sample_rate as f32).fract();
+            let triangle = 1.0 - (2.0 * phase - 1.0).abs();
+            levels[BASS] = (levels[BASS] as f32 * (0.3 + 0.7 * triangle)) as u8;
+            self.bass_age += 1;
+        }
+        for (channel, level) in levels.into_iter().enumerate() {
+            self.chip.write_register(8 + channel as u8, level);
         }
 
         // Drop the kick pitch over its first 80 ms.
@@ -201,6 +266,38 @@ mod tests {
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01);
         }
+    }
+
+    #[test]
+    fn arp_cycles_and_bass_borrows() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.bass(130.81);
+        engine.next_sample();
+        assert!(engine.chip.read_register(9) > 0);
+        assert!(engine.chip.read_register(10) > 0);
+        for _ in 0..2000 {
+            engine.next_sample();
+        }
+        assert_eq!(engine.chip.read_register(2), 123); // 329.63 Hz: period 379.
+        assert_eq!(engine.chip.read_register(3), 1);
+        engine.kick();
+        engine.bass(196.0);
+        assert_eq!(engine.drum, Some(Drum::Kick));
+    }
+
+    #[test]
+    fn bass_volume_is_stepped() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.bass(130.81);
+        let levels: std::collections::HashSet<_> = (0..300)
+            .map(|_| {
+                engine.next_sample();
+                engine.chip.read_register(10)
+            })
+            .collect();
+        assert!(levels.len() > 2);
+        assert_eq!(engine.chip.read_register(7), 0x38);
     }
 
     #[test]
