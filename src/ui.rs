@@ -1,6 +1,6 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, random_pattern};
+use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, random_track};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
@@ -76,8 +76,7 @@ impl Model for AppState {
             AppEvent::Randomize => {
                 {
                     let mut s = self.shared.lock().unwrap();
-                    s.pattern = random_pattern();
-                    s.reset = true;
+                    random_track(&mut s.pattern, self.selected_track.get());
                 }
                 self.sync_from_shared();
             }
