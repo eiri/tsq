@@ -210,7 +210,7 @@ impl PsgEngine {
         if self.notes[ARPEGGIO].left > 0 {
             let slice = (self.sample_rate / 24).max(1);
             let index = (self.arp_age / slice) as usize % 3;
-            if self.arp_age % slice == 0 {
+            if self.arp_age.is_multiple_of(slice) {
                 self.set_pitch(ARPEGGIO, self.arp_notes[index]);
                 self.arp_phase = 0.0;
             }

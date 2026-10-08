@@ -266,8 +266,8 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
 
                     // Selection and mute each change the marker's light level.
                     VStack::new(cx, move |cx| {
-                        for i in 0..TRACKS {
-                            let heart_state = track_state(selected, marks[i], i);
+                        for (i, muted) in marks.into_iter().enumerate() {
+                            let heart_state = track_state(selected, muted, i);
                             Heart::new(cx, heart_state)
                                 .width(Pixels(18.0))
                                 .height(Pixels(18.0));
