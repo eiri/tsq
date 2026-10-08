@@ -3,31 +3,25 @@
 [![CI](https://github.com/eiri/tsq/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/eiri/tsq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/eiri/tsq)](LICENSE)
 
-A toy 8-step sequencer.
+A toy 8-step music sequencer that uses emulated YM2149 sound chip.
 
-![tsq UI](ui.png)
+The pattern plays at 120 beats per minute. It has four tracks:
 
-## Summary
+- Melody: notes from C4 to C5, with two sound variations (M1 and M2).
+- Arpeggio: a group of notes played one after another with a different voice.
+- Bass: low notes with a rounded sound.
+- Drums: kick, snare, and open or closed hi-hat.
 
-Two emulated YM2149 sound chips. 8-step sequencer loops a pattern of kick, snare, hi-hat, and melody. The tempo is fixed at 120 BPM and you can randomize the pattern during playback.
-
-## Tracks
-
-- kick
-- snare
-- open/closed hi-hat
-- melody (pluck or sustain)
-
-The melody plays one C major note per step, from C4 to C5.
+Bass and drums share one chip channel, so a drum can interrupt a bass note.
 
 ## Controls
 
-| Key     | Action                  |
-| ------- | ----------------------- |
-| `p`     | start/stop play         |
-| `t`     | choose instrument track |
-| `r`     | randomize pattern       |
-| `CMD+Q` | quit                    |
+| Key     | Action                    |
+| ------- | ------------------------- |
+| `p`     | Start or stop playback    |
+| `t`     | Move the track marker     |
+| `r`     | Make a new random pattern |
+| `CMD+Q` | Quit                      |
 
 ## Build & Run
 
