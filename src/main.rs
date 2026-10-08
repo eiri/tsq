@@ -118,7 +118,8 @@ where
                     s.muted,
                 )
             };
-            if reset || (audition.is_some() && !playing) {
+            // Stop playback tails, but let a paused audition start cleanly.
+            if reset || (!playing && (last_playing || audition.is_some())) {
                 engine.reset();
             }
 
