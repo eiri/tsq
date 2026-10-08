@@ -8,7 +8,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{AudioClock, Audition, Drum, MelodyVoice, Pattern, SharedState, new_shared_state};
+use sequencer::{
+    AudioClock, Audition, Drum, MelodyVoice, Pattern, SharedState, TRACKS, new_shared_state,
+};
 
 fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
     match drum {
@@ -19,21 +21,29 @@ fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
     }
 }
 
-fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize) {
-    if let Some(note) = pattern.melody[step] {
+fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize, muted: [bool; TRACKS]) {
+    if !muted[0]
+        && let Some(note) = pattern.melody[step]
+    {
         match note.voice {
             MelodyVoice::M1 => engine.melody(note.freq, pattern.melody_style),
             MelodyVoice::M2 => engine.melody2(note.freq),
         }
     }
-    if let Some(notes) = pattern.arpeggio[step] {
+    if !muted[1]
+        && let Some(notes) = pattern.arpeggio[step]
+    {
         engine.arpeggio(notes);
     }
     // Drums take channel C if bass and drums start on the same step.
-    if let Some(freq) = pattern.bass[step] {
+    if !muted[2]
+        && let Some(freq) = pattern.bass[step]
+    {
         engine.bass(freq);
     }
-    if let Some(drum) = pattern.drums[step] {
+    if !muted[3]
+        && let Some(drum) = pattern.drums[step]
+    {
         trigger_drum(engine, drum);
     }
 }
@@ -89,12 +99,14 @@ where
 {
     let mut clock = AudioClock::new(config.sample_rate as f64);
     let mut engine = PsgEngine::new(config.sample_rate);
+    let mut last_mutes = [false; TRACKS];
+    let mut last_playing = false;
     let channels = config.channels as usize;
 
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let (bpm, pattern, playing, reset, audition) = {
+            let (bpm, pattern, playing, reset, audition, muted) = {
                 let mut s = shared.lock().unwrap();
                 let reset = std::mem::take(&mut s.reset);
                 (
@@ -103,11 +115,22 @@ where
                     s.playing,
                     reset,
                     s.audition.take(),
+                    s.muted,
                 )
             };
             if reset || (audition.is_some() && !playing) {
                 engine.reset();
             }
+
+            // Stop newly muted notes and muted previews when playback starts.
+            for track in 0..TRACKS {
+                if muted[track] && (!last_mutes[track] || (playing && !last_playing)) {
+                    engine.mute(track);
+                }
+            }
+            last_mutes = muted;
+            last_playing = playing;
+
             if let Some(request) = audition {
                 trigger_audition(&mut engine, request);
             }
@@ -115,7 +138,7 @@ where
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        trigger_step(&mut engine, &pattern, step);
+                        trigger_step(&mut engine, &pattern, step, muted);
                         let mut s = shared.lock().unwrap();
                         s.current_step = step;
                     }
@@ -197,16 +220,50 @@ mod tests {
                 3 => pattern.bass[0] = Some(130.81),
                 _ => pattern.drums[0] = Some(Drum::Snare),
             }
-            trigger_step(&mut engine, &pattern, 0);
+            trigger_step(&mut engine, &pattern, 0, [false; TRACKS]);
             assert!(engine.active());
             let peak = (0..4096)
                 .map(|_| engine.next_sample().abs())
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01, "voice {voice} was silent");
+
+            let mut muted = [false; TRACKS];
+            muted[match voice {
+                0 | 1 => 0,
+                2 => 1,
+                3 => 2,
+                _ => 3,
+            }] = true;
+            let mut silent = PsgEngine::new(48_000);
+            trigger_step(&mut silent, &pattern, 0, muted);
+            assert!(!silent.active(), "muted voice {voice} played");
+
             pattern.melody[0] = None;
             pattern.arpeggio[0] = None;
             pattern.bass[0] = None;
             pattern.drums[0] = None;
+        }
+    }
+
+    #[test]
+    fn shared_channel_mutes_are_independent() {
+        let mut pattern = Pattern::default();
+        pattern.melody = [None; sequencer::STEPS];
+        pattern.arpeggio = [None; sequencer::STEPS];
+        pattern.bass = [None; sequencer::STEPS];
+        pattern.drums = [None; sequencer::STEPS];
+        pattern.bass[0] = Some(130.81);
+        pattern.drums[0] = Some(Drum::Snare);
+
+        for track in [2, 3] {
+            let mut muted = [false; TRACKS];
+            muted[track] = true;
+            let mut engine = PsgEngine::new(48_000);
+            trigger_step(&mut engine, &pattern, 0, muted);
+            let peak = (0..4096)
+                .map(|_| engine.next_sample().abs())
+                .fold(0.0_f32, f32::max);
+            assert!(peak > 0.01, "muting track {track} silenced both voices");
         }
     }
 

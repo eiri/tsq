@@ -162,8 +162,27 @@ impl PsgEngine {
         self.chip.write_register(7, 0x3c);
         self.bass_freq = freq;
         self.bass_age = 0;
-        self.notes[BASS].start(self.samples(0.45), 10);
+        self.notes[BASS].start(self.samples(0.45), 9);
         self.set_pitch(BASS, freq);
+    }
+
+    pub fn mute(&mut self, track: usize) {
+        // Stop only the selected voice; bass and drums borrow the same channel.
+        let channel = match track {
+            0 => Some(MELODY),
+            1 => Some(ARPEGGIO),
+            2 if self.drum.is_none() => Some(BASS),
+            3 if self.drum.is_some() => {
+                self.drum = None;
+                self.chip.write_register(7, 0x38);
+                Some(BASS)
+            }
+            _ => None,
+        };
+        if let Some(channel) = channel {
+            self.notes[channel].left = 0;
+            self.chip.write_register(8 + channel as u8, 0);
+        }
     }
 
     pub fn active(&self) -> bool {
@@ -207,12 +226,14 @@ impl PsgEngine {
             self.arp_age += 1;
         }
 
-        // Smooth the triangle's corners before writing the chip's volume DAC.
+        // Hold the rounded bass at full level, then fade to avoid a click.
         if self.drum.is_none() && self.notes[BASS].left > 0 {
             let phase = (self.bass_age as f32 * self.bass_freq / self.sample_rate as f32).fract();
             let triangle = 1.0 - (2.0 * phase - 1.0).abs();
             let rounded = triangle * triangle * (3.0 - 2.0 * triangle);
-            levels[BASS] = (levels[BASS] as f32 * rounded).round() as u8;
+            let release =
+                (self.notes[BASS].left as f32 / self.samples(0.12).max(1) as f32).min(1.0);
+            levels[BASS] = (self.notes[BASS].volume as f32 * rounded * release).round() as u8;
             self.bass_age += 1;
         }
         for (channel, level) in levels.into_iter().enumerate() {
@@ -330,6 +351,17 @@ mod tests {
             })
             .collect();
         assert!(levels.len() > 2);
+        for _ in 300..12_000 {
+            engine.next_sample();
+        }
+        let sustained_peak = (0..400)
+            .map(|_| {
+                engine.next_sample();
+                engine.chip.read_register(10)
+            })
+            .max()
+            .unwrap();
+        assert_eq!(sustained_peak, 9);
         assert_eq!(engine.chip.read_register(7), 0x3c);
     }
 
@@ -370,6 +402,32 @@ mod tests {
         engine.melody(440.0, MelodyStyle::Pluck);
         engine.next_sample();
         assert_eq!(engine.chip.read_register(8), 11);
+    }
+
+    #[test]
+    fn mute_keeps_other_channels() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.melody(440.0, MelodyStyle::Sustain);
+        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.bass(130.81);
+        engine.mute(0);
+        assert_eq!(engine.notes[MELODY].left, 0);
+        assert!(engine.notes[ARPEGGIO].left > 0);
+        assert!(engine.notes[BASS].left > 0);
+
+        engine.kick();
+        engine.mute(2); // Muting bass must not stop a drum.
+        assert_eq!(engine.drum, Some(Drum::Kick));
+        engine.mute(3);
+        assert_eq!(engine.drum, None);
+        assert_eq!(engine.chip.read_register(10), 0);
+        assert!(engine.notes[ARPEGGIO].left > 0);
+
+        engine.bass(130.81);
+        engine.mute(3); // Muting drums must not stop a bass note.
+        assert!(engine.notes[BASS].left > 0);
+        engine.mute(2);
+        assert_eq!(engine.notes[BASS].left, 0);
     }
 
     #[test]
