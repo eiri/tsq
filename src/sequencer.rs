@@ -17,6 +17,14 @@ pub enum Drum {
     OpenHat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audition {
+    Melody,
+    Arpeggio,
+    Bass,
+    Drum(Drum),
+}
+
 #[derive(Clone)]
 pub struct Pattern {
     pub melody: [Option<f32>; STEPS],
@@ -35,16 +43,17 @@ impl Default for Pattern {
         Self {
             melody: std::array::from_fn(|i| [0, 2, 5, 7].contains(&i).then_some(MELODY[i])),
             arpeggio: std::array::from_fn(|i| (i % 2 == 0).then_some(CHORD)),
-            bass: std::array::from_fn(|i| (i % 2 == 0).then_some(130.81)),
+            // Leave channel C free on these steps so the bass can sound.
+            bass: std::array::from_fn(|i| [3, 5, 7].contains(&i).then_some(130.81)),
             drums: [
                 Some(Drum::Kick),
+                None,
                 Some(Drum::ClosedHat),
-                Some(Drum::OpenHat),
-                Some(Drum::ClosedHat),
+                None,
                 Some(Drum::Snare),
+                None,
                 Some(Drum::ClosedHat),
-                Some(Drum::Kick),
-                Some(Drum::OpenHat),
+                None,
             ],
             melody_style: MelodyStyle::Pluck,
         }
@@ -78,6 +87,7 @@ pub struct SequencerState {
     pub current_step: usize,
     pub playing: bool,
     pub reset: bool,
+    pub audition: Option<Audition>,
 }
 
 impl Default for SequencerState {
@@ -88,6 +98,7 @@ impl Default for SequencerState {
             current_step: 0,
             playing: false,
             reset: false,
+            audition: None,
         }
     }
 }
@@ -145,10 +156,11 @@ mod tests {
     }
 
     #[test]
-    fn default_pattern_kick_on_beats_one_and_five() {
+    fn default_pattern_has_kick_on_first_step() {
         let p = Pattern::default();
         assert_eq!(p.drums[0], Some(Drum::Kick));
-        assert_eq!(p.drums[6], Some(Drum::Kick));
+        assert_eq!(p.drums[6], Some(Drum::ClosedHat));
+        assert_eq!(p.bass[5], Some(130.81));
     }
 
     #[test]

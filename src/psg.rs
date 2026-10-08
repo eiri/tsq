@@ -102,7 +102,8 @@ impl PsgEngine {
             7,
             match kind {
                 Drum::Kick => 0x38,
-                _ => 0x18, // Noise C enabled; other channels retain tone only.
+                Drum::Snare => 0x18, // Snare combines tone and noise on C.
+                _ => 0x1c,           // Hats use noise only on C.
             },
         );
     }
@@ -151,6 +152,10 @@ impl PsgEngine {
         self.bass_age = 0;
         self.notes[BASS].start(self.samples(0.45), 10);
         self.set_pitch(BASS, freq);
+    }
+
+    pub fn active(&self) -> bool {
+        self.notes.iter().any(|note| note.left > 0)
     }
 
     pub fn next_sample(&mut self) -> f32 {
@@ -249,6 +254,9 @@ mod tests {
         assert_eq!(engine.chip.read_register(7), 0x38);
         engine.hihat(false); // Lower-priority drum cannot interrupt the kick.
         assert_eq!(engine.drum, Some(Drum::Kick));
+        let mut hat = PsgEngine::new(48_000);
+        hat.hihat(false);
+        assert_eq!(hat.chip.read_register(7), 0x1c);
     }
 
     #[test]
