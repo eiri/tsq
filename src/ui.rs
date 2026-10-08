@@ -1,6 +1,6 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{Audition, Drum, STEPS, SharedState, random_pattern};
+use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, random_pattern};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
@@ -20,7 +20,7 @@ const STYLE: &str = r#"
 struct AppState {
     selected_track: Signal<usize>,
     current_step: Signal<usize>,
-    melody: Signal<Vec<bool>>,
+    melody: Signal<Vec<Option<MelodyVoice>>>,
     arpeggio: Signal<Vec<bool>>,
     bass: Signal<Vec<bool>>,
     drums: Signal<Vec<Option<Drum>>>,
@@ -35,8 +35,13 @@ impl AppState {
 
         // Unchanged timer ticks must not rebuild the sequencer views.
         self.current_step.set_if_changed(s.current_step);
-        self.melody
-            .set_if_changed(s.pattern.melody.iter().map(Option::is_some).collect());
+        self.melody.set_if_changed(
+            s.pattern
+                .melody
+                .iter()
+                .map(|note| note.map(|n| n.voice))
+                .collect(),
+        );
         self.arpeggio
             .set_if_changed(s.pattern.arpeggio.iter().map(Option::is_some).collect());
         self.bass
@@ -104,6 +109,25 @@ fn step_color_bool(active: bool, is_current: bool) -> StepDotState {
     }
 }
 
+fn melody_step_row(cx: &mut Context, steps: &[Option<MelodyVoice>], current: usize) {
+    HStack::new(cx, |cx| {
+        for (i, voice) in steps.iter().enumerate() {
+            let state = match (i == current, voice) {
+                (true, _) => StepDotState::On,
+                (false, Some(MelodyVoice::M1)) => StepDotState::Dim,
+                (false, Some(MelodyVoice::M2)) => StepDotState::HalfDim,
+                (false, None) => StepDotState::Off,
+            };
+            StepDot::new(cx, state)
+                .width(Pixels(18.0))
+                .height(Pixels(18.0));
+        }
+    })
+    .alignment(Alignment::Center)
+    .height(Pixels(54.0))
+    .horizontal_gap(Pixels(36.0));
+}
+
 fn step_color_drum(step: &Option<Drum>, is_current: bool) -> StepDotState {
     match (step, is_current) {
         (_, true) => StepDotState::On,
@@ -159,7 +183,13 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             (
                 Signal::new(0),
                 Signal::new(s.current_step),
-                Signal::new(s.pattern.melody.iter().map(Option::is_some).collect()),
+                Signal::new(
+                    s.pattern
+                        .melody
+                        .iter()
+                        .map(|note| note.map(|n| n.voice))
+                        .collect(),
+                ),
                 Signal::new(s.pattern.arpeggio.iter().map(Option::is_some).collect()),
                 Signal::new(s.pattern.bass.iter().map(Option::is_some).collect()),
                 Signal::new(s.pattern.drums.to_vec()),
@@ -233,7 +263,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                     VStack::new(cx, move |cx| {
                         // page stack
                         HStack::new(cx, |cx| {
-                            for i in 0..NUM_TRACKS {
+                            for i in 0..STEPS / 2 {
                                 let state = if i == current / 2 {
                                     PipState::On
                                 } else {
@@ -248,8 +278,8 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                         .horizontal_gap(Pixels(36.0));
                         // steps
                         Binding::new(cx, melody, move |cx| {
-                            let k = melody.get();
-                            bool_step_row(cx, &k, current, 0..STEPS);
+                            let m = melody.get();
+                            melody_step_row(cx, &m, current);
                         });
 
                         Binding::new(cx, arpeggio, move |cx| {
@@ -304,16 +334,17 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 .width(Pixels(216.0))
                 .height(Pixels(54.0));
 
-                // Seven sounds occupy two rows in a separate stack.
+                // Eight sounds occupy two rows in a separate stack.
                 VStack::new(cx, |cx| {
                     for row in [
                         &[
                             ("M1", Audition::Melody),
+                            ("M2", Audition::Melody2),
                             ("A", Audition::Arpeggio),
                             ("B", Audition::Bass),
-                            ("K", Audition::Drum(Drum::Kick)),
                         ][..],
                         &[
+                            ("K", Audition::Drum(Drum::Kick)),
                             ("S", Audition::Drum(Drum::Snare)),
                             ("CH", Audition::Drum(Drum::ClosedHat)),
                             ("OH", Audition::Drum(Drum::OpenHat)),
@@ -404,13 +435,16 @@ mod tests {
         {
             let mut s = shared.lock().unwrap();
             s.current_step = 1;
-            s.pattern.melody[1] = Some(293.66);
+            s.pattern.melody[4] = Some(crate::sequencer::MelodyStep {
+                freq: 392.0,
+                voice: crate::sequencer::MelodyVoice::M2,
+            });
             s.playing = true;
         }
         state.sync_from_shared();
         assert_eq!(updates.get(), 3);
         assert_eq!(state.current_step.get(), 1);
-        assert!(state.melody.get()[1]);
+        assert_eq!(state.melody.get()[4], Some(MelodyVoice::M2));
         assert!(state.playing.get());
 
         state.sync_from_shared();

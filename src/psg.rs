@@ -32,6 +32,7 @@ pub struct PsgEngine {
     chip: Ym2149,
     notes: [Note; 3],
     drum: Option<Drum>,
+    melody2: bool,
     sample_rate: u32,
     arp_notes: [f32; 3],
     arp_age: u32,
@@ -46,6 +47,7 @@ impl PsgEngine {
             chip: Ym2149::with_clocks(MASTER_CLOCK, sample_rate),
             notes: std::array::from_fn(|_| Note::default()),
             drum: None,
+            melody2: false,
             sample_rate,
             arp_notes: [0.0; 3],
             arp_age: 0,
@@ -61,6 +63,7 @@ impl PsgEngine {
         self.chip.reset();
         self.notes = std::array::from_fn(|_| Note::default());
         self.drum = None;
+        self.melody2 = false;
         self.arp_age = 0;
         self.arp_phase = 0.0;
         self.bass_age = 0;
@@ -109,11 +112,11 @@ impl PsgEngine {
     }
 
     pub fn kick(&mut self) {
-        self.drum(Drum::Kick, 0.35, 15);
+        self.drum(Drum::Kick, 0.35, 10);
     }
 
     pub fn snare(&mut self) {
-        self.drum(Drum::Snare, 0.25, 12);
+        self.drum(Drum::Snare, 0.25, 8);
         if self.drum == Some(Drum::Snare) {
             self.set_pitch(BASS, 180.0);
         }
@@ -125,12 +128,20 @@ impl PsgEngine {
     }
 
     pub fn melody(&mut self, freq: f32, style: MelodyStyle) {
+        self.melody2 = false;
         self.set_pitch(MELODY, freq);
         let duration = match style {
             MelodyStyle::Pluck => 0.2,
             MelodyStyle::Sustain => 0.6,
         };
         self.notes[MELODY].start(self.samples(duration), 11);
+    }
+
+    pub fn melody2(&mut self, freq: f32) {
+        // A soft attack and release give channel A a sustained variation.
+        self.melody2 = true;
+        self.set_pitch(MELODY, freq);
+        self.notes[MELODY].start(self.samples(0.6), 8);
     }
 
     pub fn arpeggio(&mut self, notes: [f32; 3]) {
@@ -147,7 +158,8 @@ impl PsgEngine {
             return;
         }
         self.drum = None;
-        self.chip.write_register(7, 0x38);
+        // Disable tone C and use its stepped volume as a soft bass waveform.
+        self.chip.write_register(7, 0x3c);
         self.bass_freq = freq;
         self.bass_age = 0;
         self.notes[BASS].start(self.samples(0.45), 10);
@@ -165,6 +177,15 @@ impl PsgEngine {
         }
 
         let mut levels = std::array::from_fn::<_, 3, _>(|i| self.notes[i].level());
+
+        // M2 holds its level between a gentle attack and release.
+        let melody = &self.notes[MELODY];
+        if self.melody2 && melody.left > 0 {
+            let age = melody.length - melody.left;
+            let attack = age as f32 / self.samples(0.04).max(1) as f32;
+            let release = melody.left as f32 / self.samples(0.12).max(1) as f32;
+            levels[MELODY] = (melody.volume as f32 * attack.min(release).min(1.0)).round() as u8;
+        }
 
         // Fast chord cycling suggests a chord on a single square-wave channel.
         if self.notes[ARPEGGIO].left > 0 {
@@ -186,11 +207,12 @@ impl PsgEngine {
             self.arp_age += 1;
         }
 
-        // Shape bass with stepped volume while retaining the chip's square tone.
+        // Smooth the triangle's corners before writing the chip's volume DAC.
         if self.drum.is_none() && self.notes[BASS].left > 0 {
             let phase = (self.bass_age as f32 * self.bass_freq / self.sample_rate as f32).fract();
             let triangle = 1.0 - (2.0 * phase - 1.0).abs();
-            levels[BASS] = (levels[BASS] as f32 * (0.3 + 0.7 * triangle)) as u8;
+            let rounded = triangle * triangle * (3.0 - 2.0 * triangle);
+            levels[BASS] = (levels[BASS] as f32 * rounded).round() as u8;
             self.bass_age += 1;
         }
         for (channel, level) in levels.into_iter().enumerate() {
@@ -283,8 +305,11 @@ mod tests {
         engine.bass(130.81);
         engine.next_sample();
         assert!(engine.chip.read_register(9) > 0);
+        for _ in 1..100 {
+            engine.next_sample();
+        }
         assert!(engine.chip.read_register(10) > 0);
-        for _ in 0..2000 {
+        for _ in 100..2001 {
             engine.next_sample();
         }
         assert_eq!(engine.chip.read_register(2), 123); // 329.63 Hz: period 379.
@@ -305,7 +330,46 @@ mod tests {
             })
             .collect();
         assert!(levels.len() > 2);
-        assert_eq!(engine.chip.read_register(7), 0x38);
+        assert_eq!(engine.chip.read_register(7), 0x3c);
+    }
+
+    #[test]
+    fn drum_levels_are_lower() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.kick();
+        engine.next_sample();
+        assert_eq!(engine.chip.read_register(10), 10);
+        engine.snare(); // A lower-priority hit cannot interrupt the kick.
+        assert_eq!(engine.drum, Some(Drum::Kick));
+        engine.reset();
+        engine.snare();
+        engine.next_sample();
+        assert_eq!(engine.chip.read_register(10), 8);
+    }
+
+    #[test]
+    fn melody2_sustains_softly() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.melody(440.0, MelodyStyle::Sustain);
+        engine.melody2(440.0);
+        engine.next_sample();
+        assert_eq!(engine.chip.read_register(8), 0);
+        assert_eq!(engine.chip.read_register(0), 28); // Same pitch as M1.
+        assert_eq!(engine.chip.read_register(1), 1);
+
+        for _ in 0..48_000 / 4 {
+            engine.next_sample();
+        }
+        assert_eq!(engine.chip.read_register(8), 8);
+
+        for _ in 0..48_000 / 3 {
+            engine.next_sample();
+        }
+        assert!(engine.chip.read_register(8) < 8);
+
+        engine.melody(440.0, MelodyStyle::Pluck);
+        engine.next_sample();
+        assert_eq!(engine.chip.read_register(8), 11);
     }
 
     #[test]

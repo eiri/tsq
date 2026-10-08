@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{AudioClock, Audition, Drum, Pattern, SharedState, new_shared_state};
+use sequencer::{AudioClock, Audition, Drum, MelodyVoice, Pattern, SharedState, new_shared_state};
 
 fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
     match drum {
@@ -20,8 +20,11 @@ fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
 }
 
 fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize) {
-    if let Some(freq) = pattern.melody[step] {
-        engine.melody(freq, pattern.melody_style);
+    if let Some(note) = pattern.melody[step] {
+        match note.voice {
+            MelodyVoice::M1 => engine.melody(note.freq, pattern.melody_style),
+            MelodyVoice::M2 => engine.melody2(note.freq),
+        }
     }
     if let Some(notes) = pattern.arpeggio[step] {
         engine.arpeggio(notes);
@@ -38,6 +41,7 @@ fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize) {
 fn trigger_audition(engine: &mut PsgEngine, request: Audition) {
     match request {
         Audition::Melody => engine.melody(440.0, sequencer::MelodyStyle::Sustain),
+        Audition::Melody2 => engine.melody2(440.0),
         Audition::Arpeggio => engine.arpeggio([261.63, 329.63, 392.0]),
         Audition::Bass => engine.bass(130.81),
         Audition::Drum(drum) => trigger_drum(engine, drum),
@@ -174,12 +178,23 @@ mod tests {
         pattern.bass = [None; sequencer::STEPS];
         pattern.drums = [None; sequencer::STEPS];
 
-        for voice in 0..4 {
+        for voice in 0..5 {
             let mut engine = PsgEngine::new(48_000);
             match voice {
-                0 => pattern.melody[0] = Some(440.0),
-                1 => pattern.arpeggio[0] = Some([261.63, 329.63, 392.0]),
-                2 => pattern.bass[0] = Some(130.81),
+                0 => {
+                    pattern.melody[0] = Some(sequencer::MelodyStep {
+                        freq: 440.0,
+                        voice: MelodyVoice::M1,
+                    })
+                }
+                1 => {
+                    pattern.melody[0] = Some(sequencer::MelodyStep {
+                        freq: 440.0,
+                        voice: MelodyVoice::M2,
+                    })
+                }
+                2 => pattern.arpeggio[0] = Some([261.63, 329.63, 392.0]),
+                3 => pattern.bass[0] = Some(130.81),
                 _ => pattern.drums[0] = Some(Drum::Snare),
             }
             trigger_step(&mut engine, &pattern, 0);
@@ -199,6 +214,7 @@ mod tests {
     fn audition_finishes_while_paused() {
         for request in [
             Audition::Melody,
+            Audition::Melody2,
             Audition::Arpeggio,
             Audition::Bass,
             Audition::Drum(Drum::Kick),
