@@ -195,11 +195,13 @@ mod tests {
 
     #[test]
     fn sequenced_voices_sound() {
-        let mut pattern = Pattern::default();
-        pattern.melody = [None; sequencer::STEPS];
-        pattern.arpeggio = [None; sequencer::STEPS];
-        pattern.bass = [None; sequencer::STEPS];
-        pattern.drums = [None; sequencer::STEPS];
+        let mut pattern = Pattern {
+            melody: [None; sequencer::STEPS],
+            arpeggio: [None; sequencer::STEPS],
+            bass: [None; sequencer::STEPS],
+            drums: [None; sequencer::STEPS],
+            ..Pattern::default()
+        };
 
         for voice in 0..5 {
             let mut engine = PsgEngine::new(48_000);
@@ -247,11 +249,13 @@ mod tests {
 
     #[test]
     fn shared_channel_mutes_are_independent() {
-        let mut pattern = Pattern::default();
-        pattern.melody = [None; sequencer::STEPS];
-        pattern.arpeggio = [None; sequencer::STEPS];
-        pattern.bass = [None; sequencer::STEPS];
-        pattern.drums = [None; sequencer::STEPS];
+        let mut pattern = Pattern {
+            melody: [None; sequencer::STEPS],
+            arpeggio: [None; sequencer::STEPS],
+            bass: [None; sequencer::STEPS],
+            drums: [None; sequencer::STEPS],
+            ..Pattern::default()
+        };
         pattern.bass[0] = Some(130.81);
         pattern.drums[0] = Some(Drum::Snare);
 
