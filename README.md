@@ -5,14 +5,14 @@
 
 A toy 8-step music sequencer that uses emulated YM2149 sound chip.
 
-The pattern plays at 120 beats per minute. It has four tracks:
+![tsq UI](ui.png)
+
+## Tracks
 
 - Melody: notes from C4 to C5, with two sound variations (M1 and M2).
 - Arpeggio: a group of notes played one after another with a different voice.
 - Bass: low notes with a rounded sound.
 - Drums: kick, snare, and open or closed hi-hat.
-
-Bass and drums share one chip channel, so a drum can interrupt a bass note.
 
 ## Controls
 
@@ -23,6 +23,10 @@ Bass and drums share one chip channel, so a drum can interrupt a bass note.
 | `m`     | Mute or unmute that track |
 | `r`     | Randomize selected track  |
 | `CMD+Q` | Quit                      |
+
+## Notes
+
+The pattern plays at 120 beats per minute. Bass and drums share one chip channel, so a drum can interrupt a bass note.
 
 ## Build & Run
 
