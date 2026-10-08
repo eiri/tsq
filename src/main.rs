@@ -8,12 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{AudioClock, HihatVoice, STEPS, SharedState, new_shared_state};
-
-// C major scale from middle C (C4) to C5, one note per step
-const TONE_FREQS: [f32; STEPS] = [
-    261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25,
-];
+use sequencer::{AudioClock, Drum, SharedState, new_shared_state};
 
 fn write_frame<T: SizedSample + FromSample<f32>>(frame: &mut [T], sample: f32) {
     // Integer conversion requires values below +1, including 24-bit samples.
@@ -73,17 +68,16 @@ where
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        if pattern.kick[step] {
-                            engine.kick();
+                        if let Some(drum) = pattern.drums[step] {
+                            match drum {
+                                Drum::Kick => engine.kick(),
+                                Drum::Snare => engine.snare(),
+                                Drum::ClosedHat => engine.hihat(false),
+                                Drum::OpenHat => engine.hihat(true),
+                            }
                         }
-                        if pattern.snare[step] {
-                            engine.snare();
-                        }
-                        if let Some(hv) = &pattern.hihat[step] {
-                            engine.hihat(*hv == HihatVoice::Open);
-                        }
-                        if pattern.tone[step] {
-                            engine.melody(TONE_FREQS[step], pattern.melody_style);
+                        if let Some(freq) = pattern.melody[step] {
+                            engine.melody(freq, pattern.melody_style);
                         }
                         let mut s = shared.lock().unwrap();
                         s.current_step = step;

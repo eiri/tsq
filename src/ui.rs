@@ -1,6 +1,6 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{HihatVoice, STEPS, SharedState, random_pattern};
+use crate::sequencer::{Drum, STEPS, SharedState, random_pattern};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const NUM_TRACKS: usize = 4;
@@ -20,10 +20,10 @@ const STYLE: &str = r#"
 struct AppState {
     selected_track: Signal<usize>,
     current_step: Signal<usize>,
-    kick: Signal<Vec<bool>>,
-    snare: Signal<Vec<bool>>,
-    hihat: Signal<Vec<Option<HihatVoice>>>,
-    tone: Signal<Vec<bool>>,
+    melody: Signal<Vec<bool>>,
+    arpeggio: Signal<Vec<bool>>,
+    bass: Signal<Vec<bool>>,
+    drums: Signal<Vec<Option<Drum>>>,
     playing: Signal<bool>,
     shared: SharedState,
 }
@@ -35,10 +35,13 @@ impl AppState {
 
         // Unchanged timer ticks must not rebuild the sequencer views.
         self.current_step.set_if_changed(s.current_step);
-        self.kick.set_if_changed(s.pattern.kick.to_vec());
-        self.snare.set_if_changed(s.pattern.snare.to_vec());
-        self.hihat.set_if_changed(s.pattern.hihat.to_vec());
-        self.tone.set_if_changed(s.pattern.tone.to_vec());
+        self.melody
+            .set_if_changed(s.pattern.melody.iter().map(Option::is_some).collect());
+        self.arpeggio
+            .set_if_changed(s.pattern.arpeggio.iter().map(Option::is_some).collect());
+        self.bass
+            .set_if_changed(s.pattern.bass.iter().map(Option::is_some).collect());
+        self.drums.set_if_changed(s.pattern.drums.to_vec());
         self.playing.set_if_changed(s.playing);
     }
 }
@@ -97,11 +100,11 @@ fn step_color_bool(active: bool, is_current: bool) -> StepDotState {
     }
 }
 
-fn step_color_hihat(step: &Option<HihatVoice>, is_current: bool) -> StepDotState {
+fn step_color_drum(step: &Option<Drum>, is_current: bool) -> StepDotState {
     match (step, is_current) {
         (_, true) => StepDotState::On,
-        (Some(HihatVoice::Open), false) => StepDotState::Dim,
-        (Some(HihatVoice::Closed), false) => StepDotState::HalfDim,
+        (Some(Drum::ClosedHat), false) => StepDotState::HalfDim,
+        (Some(_), false) => StepDotState::Dim,
         (None, false) => StepDotState::Off,
     }
 }
@@ -121,15 +124,15 @@ fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::o
     .horizontal_gap(Pixels(36.0));
 }
 
-fn hihat_step_row(
+fn drum_step_row(
     cx: &mut Context,
-    steps: &[Option<HihatVoice>],
+    steps: &[Option<Drum>],
     current: usize,
     range: std::ops::Range<usize>,
 ) {
     HStack::new(cx, move |cx| {
         for i in range {
-            let step_dot_state = step_color_hihat(&steps[i], i == current);
+            let step_dot_state = step_color_drum(&steps[i], i == current);
             StepDot::new(cx, step_dot_state)
                 .width(Pixels(18.0))
                 .height(Pixels(18.0));
@@ -147,15 +150,15 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
     Application::new(move |cx| {
         cx.add_stylesheet(STYLE).expect("loads the style");
 
-        let (selected_track, current_step, kick, snare, hihat, tone, playing) = {
+        let (selected_track, current_step, melody, arpeggio, bass, drums, playing) = {
             let s = shared_clone.lock().unwrap();
             (
                 Signal::new(0),
                 Signal::new(s.current_step),
-                Signal::new(s.pattern.kick.to_vec()),
-                Signal::new(s.pattern.snare.to_vec()),
-                Signal::new(s.pattern.hihat.to_vec()),
-                Signal::new(s.pattern.tone.to_vec()),
+                Signal::new(s.pattern.melody.iter().map(Option::is_some).collect()),
+                Signal::new(s.pattern.arpeggio.iter().map(Option::is_some).collect()),
+                Signal::new(s.pattern.bass.iter().map(Option::is_some).collect()),
+                Signal::new(s.pattern.drums.to_vec()),
                 Signal::new(s.playing),
             )
         };
@@ -163,10 +166,10 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
         AppState {
             selected_track,
             current_step,
-            kick,
-            snare,
-            hihat,
-            tone,
+            melody,
+            arpeggio,
+            bass,
+            drums,
             playing,
             shared: shared_clone.clone(),
         }
@@ -239,23 +242,23 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                     .height(Pixels(36.0))
                     .horizontal_gap(Pixels(36.0));
                     // steps
-                    Binding::new(cx, kick, move |cx| {
-                        let k = kick.get();
+                    Binding::new(cx, melody, move |cx| {
+                        let k = melody.get();
                         bool_step_row(cx, &k, current, 0..STEPS);
                     });
 
-                    Binding::new(cx, snare, move |cx| {
-                        let s = snare.get();
+                    Binding::new(cx, arpeggio, move |cx| {
+                        let s = arpeggio.get();
                         bool_step_row(cx, &s, current, 0..STEPS);
                     });
 
-                    Binding::new(cx, hihat, move |cx| {
-                        let h = hihat.get();
-                        hihat_step_row(cx, &h, current, 0..STEPS);
+                    Binding::new(cx, drums, move |cx| {
+                        let h = drums.get();
+                        drum_step_row(cx, &h, current, 0..STEPS);
                     });
 
-                    Binding::new(cx, tone, move |cx| {
-                        let t = tone.get();
+                    Binding::new(cx, bass, move |cx| {
+                        let t = bass.get();
                         bool_step_row(cx, &t, current, 0..STEPS);
                     });
                 })
@@ -319,10 +322,10 @@ mod tests {
         let state = AppState {
             selected_track: Signal::new(0),
             current_step: Signal::new(0),
-            kick: Signal::new(Vec::new()),
-            snare: Signal::new(Vec::new()),
-            hihat: Signal::new(Vec::new()),
-            tone: Signal::new(Vec::new()),
+            melody: Signal::new(Vec::new()),
+            arpeggio: Signal::new(Vec::new()),
+            bass: Signal::new(Vec::new()),
+            drums: Signal::new(Vec::new()),
             playing: Signal::new(false),
             shared: shared.clone(),
         };
@@ -330,10 +333,10 @@ mod tests {
 
         let signals = (
             state.current_step,
-            state.kick,
-            state.snare,
-            state.hihat,
-            state.tone,
+            state.melody,
+            state.arpeggio,
+            state.bass,
+            state.drums,
             state.playing,
         );
         let updates = Rc::new(Cell::new(0));
@@ -363,13 +366,13 @@ mod tests {
         {
             let mut s = shared.lock().unwrap();
             s.current_step = 1;
-            s.pattern.kick[2] = true;
+            s.pattern.melody[1] = Some(293.66);
             s.playing = true;
         }
         state.sync_from_shared();
         assert_eq!(updates.get(), 3);
         assert_eq!(state.current_step.get(), 1);
-        assert!(state.kick.get()[2]);
+        assert!(state.melody.get()[1]);
         assert!(state.playing.get());
 
         state.sync_from_shared();

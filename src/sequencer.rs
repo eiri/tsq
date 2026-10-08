@@ -9,37 +9,43 @@ pub enum MelodyStyle {
     Sustain,
 }
 
-#[derive(Clone, PartialEq)]
-pub enum HihatVoice {
-    Open,
-    Closed,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drum {
+    Kick,
+    Snare,
+    ClosedHat,
+    OpenHat,
 }
 
 #[derive(Clone)]
 pub struct Pattern {
-    pub kick: [bool; STEPS],
-    pub snare: [bool; STEPS],
-    pub hihat: [Option<HihatVoice>; STEPS],
-    pub tone: [bool; STEPS],
+    pub melody: [Option<f32>; STEPS],
+    pub arpeggio: [Option<[f32; 3]>; STEPS],
+    pub bass: [Option<f32>; STEPS],
+    pub drums: [Option<Drum>; STEPS],
     pub melody_style: MelodyStyle,
 }
+
+// Frequencies use equal-tempered C major notes in Hz.
+const MELODY: [f32; STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+const CHORD: [f32; 3] = [261.63, 329.63, 392.0];
 
 impl Default for Pattern {
     fn default() -> Self {
         Self {
-            kick: [true, false, false, false, true, false, false, false],
-            snare: [false, false, false, false, true, false, false, false],
-            hihat: [
-                None,
-                Some(HihatVoice::Closed),
-                Some(HihatVoice::Open),
-                Some(HihatVoice::Open),
-                None,
-                Some(HihatVoice::Closed),
-                None,
-                Some(HihatVoice::Open),
+            melody: std::array::from_fn(|i| [0, 2, 5, 7].contains(&i).then_some(MELODY[i])),
+            arpeggio: std::array::from_fn(|i| (i % 2 == 0).then_some(CHORD)),
+            bass: std::array::from_fn(|i| (i % 2 == 0).then_some(130.81)),
+            drums: [
+                Some(Drum::Kick),
+                Some(Drum::ClosedHat),
+                Some(Drum::OpenHat),
+                Some(Drum::ClosedHat),
+                Some(Drum::Snare),
+                Some(Drum::ClosedHat),
+                Some(Drum::Kick),
+                Some(Drum::OpenHat),
             ],
-            tone: [true, false, true, false, false, true, false, true],
             melody_style: MelodyStyle::Pluck,
         }
     }
@@ -47,14 +53,16 @@ impl Default for Pattern {
 
 pub fn random_pattern() -> Pattern {
     Pattern {
-        kick: std::array::from_fn(|_| fastrand::bool()),
-        snare: std::array::from_fn(|_| fastrand::bool()),
-        hihat: std::array::from_fn(|_| match fastrand::u8(0..3) {
-            0 => Some(HihatVoice::Open),
-            1 => Some(HihatVoice::Closed),
+        melody: std::array::from_fn(|i| fastrand::bool().then_some(MELODY[i])),
+        arpeggio: std::array::from_fn(|_| fastrand::bool().then_some(CHORD)),
+        bass: std::array::from_fn(|_| fastrand::bool().then_some(130.81)),
+        drums: std::array::from_fn(|_| match fastrand::u8(0..5) {
+            0 => Some(Drum::Kick),
+            1 => Some(Drum::Snare),
+            2 => Some(Drum::ClosedHat),
+            3 => Some(Drum::OpenHat),
             _ => None,
         }),
-        tone: std::array::from_fn(|_| fastrand::bool()),
         melody_style: if fastrand::bool() {
             MelodyStyle::Pluck
         } else {
@@ -130,30 +138,23 @@ mod tests {
     #[test]
     fn default_pattern_has_eight_steps() {
         let p = Pattern::default();
-        assert_eq!(p.kick.len(), 8);
-        assert_eq!(p.snare.len(), 8);
-        assert_eq!(p.hihat.len(), 8);
-        assert_eq!(p.tone.len(), 8);
+        assert_eq!(p.melody.len(), 8);
+        assert_eq!(p.arpeggio.len(), 8);
+        assert_eq!(p.bass.len(), 8);
+        assert_eq!(p.drums.len(), 8);
     }
 
     #[test]
     fn default_pattern_kick_on_beats_one_and_five() {
         let p = Pattern::default();
-        assert!(p.kick[0]);
-        assert!(p.kick[4]);
-        assert!(!p.kick[1]);
-        assert!(!p.kick[2]);
-        assert!(!p.kick[3]);
+        assert_eq!(p.drums[0], Some(Drum::Kick));
+        assert_eq!(p.drums[6], Some(Drum::Kick));
     }
 
     #[test]
     fn default_pattern_snare_on_beat_five() {
         let p = Pattern::default();
-        assert!(p.snare[4]);
-        assert!(!p.snare[0]);
-        assert!(!p.snare[1]);
-        assert!(!p.snare[2]);
-        assert!(!p.snare[3]);
+        assert_eq!(p.drums[4], Some(Drum::Snare));
     }
 
     #[test]
@@ -219,27 +220,28 @@ mod tests {
         {
             let mut s = clone.lock().unwrap();
             s.bpm = 140.0;
-            s.pattern.kick[2] = true;
+            s.pattern.drums[2] = Some(Drum::Kick);
         }
         let s = state.lock().unwrap();
         assert_eq!(s.bpm, 140.0);
-        assert!(s.pattern.kick[2]);
+        assert_eq!(s.pattern.drums[2], Some(Drum::Kick));
     }
 
     #[test]
     fn random_pattern_has_eight_steps() {
         let p = random_pattern();
-        assert_eq!(p.kick.len(), 8);
-        assert_eq!(p.tone.len(), 8);
+        assert_eq!(p.drums.len(), 8);
+        assert_eq!(p.melody.len(), 8);
     }
 
     #[test]
     fn random_pattern_differs_from_default() {
         let default = Pattern::default();
         let random = random_pattern();
-        let same = default.kick == random.kick
-            && default.snare == random.snare
-            && default.tone == random.tone;
+        let same = default.drums == random.drums
+            && default.melody == random.melody
+            && default.arpeggio == random.arpeggio
+            && default.bass == random.bass;
         assert!(!same, "random pattern should differ from default");
     }
 }
