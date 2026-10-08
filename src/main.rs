@@ -8,7 +8,41 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{AudioClock, Drum, SharedState, new_shared_state};
+use sequencer::{AudioClock, Audition, Drum, Pattern, SharedState, new_shared_state};
+
+fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
+    match drum {
+        Drum::Kick => engine.kick(),
+        Drum::Snare => engine.snare(),
+        Drum::ClosedHat => engine.hihat(false),
+        Drum::OpenHat => engine.hihat(true),
+    }
+}
+
+fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize) {
+    if let Some(freq) = pattern.melody[step] {
+        engine.melody(freq, pattern.melody_style);
+    }
+    if let Some(notes) = pattern.arpeggio[step] {
+        engine.arpeggio(notes);
+    }
+    // Drums take channel C if bass and drums start on the same step.
+    if let Some(freq) = pattern.bass[step] {
+        engine.bass(freq);
+    }
+    if let Some(drum) = pattern.drums[step] {
+        trigger_drum(engine, drum);
+    }
+}
+
+fn trigger_audition(engine: &mut PsgEngine, request: Audition) {
+    match request {
+        Audition::Melody => engine.melody(440.0, sequencer::MelodyStyle::Sustain),
+        Audition::Arpeggio => engine.arpeggio([261.63, 329.63, 392.0]),
+        Audition::Bass => engine.bass(130.81),
+        Audition::Drum(drum) => trigger_drum(engine, drum),
+    }
+}
 
 fn write_frame<T: SizedSample + FromSample<f32>>(frame: &mut [T], sample: f32) {
     // Integer conversion requires values below +1, including 24-bit samples.
@@ -56,29 +90,28 @@ where
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let (bpm, pattern, playing, reset) = {
+            let (bpm, pattern, playing, reset, audition) = {
                 let mut s = shared.lock().unwrap();
                 let reset = std::mem::take(&mut s.reset);
-                (s.bpm, s.pattern.clone(), s.playing, reset)
+                (
+                    s.bpm,
+                    s.pattern.clone(),
+                    s.playing,
+                    reset,
+                    s.audition.take(),
+                )
             };
-            if reset {
+            if reset || (audition.is_some() && !playing) {
                 engine.reset();
+            }
+            if let Some(request) = audition {
+                trigger_audition(&mut engine, request);
             }
 
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        if let Some(drum) = pattern.drums[step] {
-                            match drum {
-                                Drum::Kick => engine.kick(),
-                                Drum::Snare => engine.snare(),
-                                Drum::ClosedHat => engine.hihat(false),
-                                Drum::OpenHat => engine.hihat(true),
-                            }
-                        }
-                        if let Some(freq) = pattern.melody[step] {
-                            engine.melody(freq, pattern.melody_style);
-                        }
+                        trigger_step(&mut engine, &pattern, step);
                         let mut s = shared.lock().unwrap();
                         s.current_step = step;
                     }
@@ -88,7 +121,12 @@ where
                     clock.step = 0;
                 }
 
-                write_frame(frame, if playing { engine.next_sample() } else { 0.0 });
+                let sample = if playing || engine.active() {
+                    engine.next_sample()
+                } else {
+                    0.0
+                };
+                write_frame(frame, sample);
             }
         },
         |err| eprintln!("audio error: {err}"),
@@ -126,6 +164,63 @@ mod tests {
 
         write_frame(&mut frame, 0.0);
         assert_eq!(frame, [T::EQUILIBRIUM; 2]);
+    }
+
+    #[test]
+    fn sequenced_voices_sound() {
+        let mut pattern = Pattern::default();
+        pattern.melody = [None; sequencer::STEPS];
+        pattern.arpeggio = [None; sequencer::STEPS];
+        pattern.bass = [None; sequencer::STEPS];
+        pattern.drums = [None; sequencer::STEPS];
+
+        for voice in 0..4 {
+            let mut engine = PsgEngine::new(48_000);
+            match voice {
+                0 => pattern.melody[0] = Some(440.0),
+                1 => pattern.arpeggio[0] = Some([261.63, 329.63, 392.0]),
+                2 => pattern.bass[0] = Some(130.81),
+                _ => pattern.drums[0] = Some(Drum::Snare),
+            }
+            trigger_step(&mut engine, &pattern, 0);
+            assert!(engine.active());
+            let peak = (0..4096)
+                .map(|_| engine.next_sample().abs())
+                .fold(0.0_f32, f32::max);
+            assert!(peak > 0.01, "voice {voice} was silent");
+            pattern.melody[0] = None;
+            pattern.arpeggio[0] = None;
+            pattern.bass[0] = None;
+            pattern.drums[0] = None;
+        }
+    }
+
+    #[test]
+    fn audition_finishes_while_paused() {
+        for request in [
+            Audition::Melody,
+            Audition::Arpeggio,
+            Audition::Bass,
+            Audition::Drum(Drum::Kick),
+            Audition::Drum(Drum::Snare),
+            Audition::Drum(Drum::ClosedHat),
+            Audition::Drum(Drum::OpenHat),
+        ] {
+            let mut engine = PsgEngine::new(48_000);
+            trigger_audition(&mut engine, request);
+            assert!(engine.active());
+            let peak = (0..48_000)
+                .map(|_| {
+                    if engine.active() {
+                        engine.next_sample().abs()
+                    } else {
+                        0.0
+                    }
+                })
+                .fold(0.0_f32, f32::max);
+            assert!(peak > 0.01, "{request:?} was silent");
+            assert!(!engine.active());
+        }
     }
 
     #[test]
