@@ -58,10 +58,16 @@ pub struct Pattern {
     pub melody_style: MelodyStyle,
 }
 
-// Frequencies use equal-tempered C major notes in Hz.
-const MELODY: [f32; PAGE_STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
-const VARIED_STEPS: [usize; 7] = [0, 1, 2, 3, 5, 6, 7];
+// Ready cue (0:12–0:17) followed by the opening of the next theme.
+// MIDI notes; zero marks a held note or a rest.
+const MELODY: [u8; STEPS] = [
+    84, 0, 0, 83, 0, 82, 83, 0, 0, 0, 0, 81, 0, 0, 0, 79, 0, 78, 0, 79, 0, 0, 0, 81, 0, 78, 0, 79,
+    0, 78, 79, 0, 78, 79, 0, 74, 77, 0, 79, 81, 83, 84, 0, 0, 0, 0, 0, 65, 0, 0, 62, 0, 57, 0, 62,
+    64, 65, 0, 67, 0, 62, 65, 60, 64,
+];
 const ARP_ORDER: [usize; 6] = [0, 1, 2, 2, 1, 0];
+// C, Bb, G, Eb, Eb, C, Dm, G: follow the cue, then the next theme.
+const DEFAULT_ROOTS: [u8; STEPS / PAGE_STEPS] = [0, 7, 4, 8, 8, 0, 1, 4];
 const BASS_PATTERNS: [[bool; PAGE_STEPS]; 4] = [
     [true, true, true, true, false, false, false, false],
     [true, true, false, true, false, false, false, false],
@@ -93,7 +99,23 @@ fn chord_at(tonic: u8, mode: Mode, root: u8) -> [f32; 3] {
 
 fn set_arpeggios(pattern: &mut Pattern) {
     for page in 0..STEPS / PAGE_STEPS {
-        let chord = chord_at(pattern.tonic, pattern.mode, pattern.arpeggio_roots[page]);
+        let chord = match pattern.arpeggio_roots[page] {
+            // Borrow Bb and Eb major to follow the cue's chromatic notes.
+            7 | 8 => {
+                let note = if pattern.arpeggio_roots[page] == 7 {
+                    70
+                } else {
+                    63
+                };
+                let root = 440.0 * 2.0_f32.powf((note as f32 + pattern.tonic as f32 - 69.0) / 12.0);
+                [
+                    root,
+                    root * 2.0_f32.powf(4.0 / 12.0),
+                    root * 2.0_f32.powf(7.0 / 12.0),
+                ]
+            }
+            root => chord_at(pattern.tonic, pattern.mode, root),
+        };
         for step in 0..PAGE_STEPS {
             pattern.arpeggio[page * PAGE_STEPS + step] =
                 ARP_ORDER.get(step).map(|&note| chord[note]);
@@ -150,33 +172,14 @@ impl Default for Pattern {
         let mut pattern = Self {
             tonic: 0,
             mode: Mode::Major,
-            melody: std::array::from_fn(|i| {
-                // Change one note per page; keep the first phrase intact.
-                let page = i / PAGE_STEPS;
-                let i = i % PAGE_STEPS;
-                let voice = if [0, 2, 5, 7].contains(&i) {
-                    MelodyVoice::M1
-                } else if [1, 3, 6].contains(&i) {
-                    MelodyVoice::M2
-                } else {
-                    return None;
-                };
-                let note = if page > 0 && i == VARIED_STEPS[page - 1] {
-                    if i == PAGE_STEPS - 1 { i - 1 } else { i + 1 }
-                } else {
-                    i
-                };
-                Some(MelodyStep {
-                    freq: MELODY[note],
-                    voice,
+            melody: MELODY.map(|note| {
+                (note != 0).then(|| MelodyStep {
+                    freq: 440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0),
+                    voice: MelodyVoice::M1,
                 })
             }),
-            arpeggio: std::array::from_fn(|i| {
-                ARP_ORDER
-                    .get(i % PAGE_STEPS)
-                    .map(|&n| chord_at(0, Mode::Major, 0)[n])
-            }),
-            arpeggio_roots: [0; STEPS / PAGE_STEPS],
+            arpeggio: [None; STEPS],
+            arpeggio_roots: DEFAULT_ROOTS,
             bass: std::array::from_fn(|i| BASS_PATTERNS[2][i % PAGE_STEPS].then_some(0.0)),
             drums: std::array::from_fn(|i| match i % PAGE_STEPS {
                 4 => Some(Drum::Kick),
@@ -184,8 +187,9 @@ impl Default for Pattern {
                 6 => Some(Drum::ClosedHat),
                 _ => None,
             }),
-            melody_style: MelodyStyle::Pluck,
+            melody_style: MelodyStyle::Sustain,
         };
+        set_arpeggios(&mut pattern);
         set_bass(&mut pattern);
         pattern
     }
@@ -366,31 +370,47 @@ mod tests {
         assert_eq!(p.bass.len(), STEPS);
         assert_eq!(p.drums.len(), STEPS);
 
-        for page in 1..STEPS / PAGE_STEPS {
-            let start = page * PAGE_STEPS;
-            let changed = (0..PAGE_STEPS)
-                .filter(|&i| p.melody[start + i] != p.melody[i])
-                .collect::<Vec<_>>();
-            assert_eq!(changed, [VARIED_STEPS[page - 1]]);
+        for (step, note) in p.melody.iter().zip(MELODY) {
+            assert_eq!(step.is_some(), note != 0);
+            assert!(step.is_none_or(|n| n.voice == MelodyVoice::M1));
+        }
 
-            for i in 0..PAGE_STEPS {
-                assert_eq!(
-                    p.melody[start + i].map(|n| n.voice),
-                    p.melody[i].map(|n| n.voice)
-                );
-                assert_eq!(p.arpeggio[start + i], p.arpeggio[i]);
-                assert_eq!(p.bass[start + i], p.bass[i]);
-                assert_eq!(p.drums[start + i], p.drums[i]);
-            }
+        for i in PAGE_STEPS..STEPS {
+            assert_eq!(
+                p.arpeggio[i].is_some(),
+                p.arpeggio[i % PAGE_STEPS].is_some()
+            );
+            assert_eq!(p.bass[i].is_some(), p.bass[i % PAGE_STEPS].is_some());
+            assert_eq!(p.drums[i], p.drums[i % PAGE_STEPS]);
         }
     }
 
     #[test]
-    fn melody_steps_choose_one_variation() {
+    fn default_melody_plays_ready_then_theme() {
         let pattern = Pattern::default();
-        assert_eq!(pattern.melody[0].unwrap().voice, MelodyVoice::M1);
-        assert_eq!(pattern.melody[1].unwrap().voice, MelodyVoice::M2);
-        assert!(pattern.melody[4].is_none());
+        assert!((pattern.melody[0].unwrap().freq - 1046.50).abs() < 0.01); // C6
+        assert!((pattern.melody[3].unwrap().freq - 987.77).abs() < 0.01); // B5
+        assert!((pattern.melody[5].unwrap().freq - 932.33).abs() < 0.01); // Bb5
+        assert!((pattern.melody[41].unwrap().freq - 1046.50).abs() < 0.01); // C6
+        assert!(pattern.melody[42..47].iter().all(Option::is_none));
+        assert!((pattern.melody[47].unwrap().freq - 349.23).abs() < 0.01); // F4
+        assert!(matches!(pattern.melody_style, MelodyStyle::Sustain));
+    }
+
+    #[test]
+    fn default_chords_follow_melody() {
+        let pattern = Pattern::default();
+        let roots = [261.63, 466.16, 392.0, 311.13, 311.13, 261.63, 293.66, 392.0];
+        for (page, root) in roots.into_iter().enumerate() {
+            let start = page * PAGE_STEPS;
+            assert!((pattern.arpeggio[start].unwrap() - root).abs() < 0.01);
+            assert_eq!(
+                pattern.bass[start],
+                Some(pattern.arpeggio[start].unwrap() / 4.0)
+            );
+        }
+        assert!((pattern.arpeggio[PAGE_STEPS + 2].unwrap() - 698.46).abs() < 0.01); // F5
+        assert!((pattern.arpeggio[3 * PAGE_STEPS + 2].unwrap() - 466.16).abs() < 0.01); // Bb4
     }
 
     #[test]
