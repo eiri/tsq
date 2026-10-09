@@ -249,6 +249,22 @@ mod tests {
     }
 
     #[test]
+    fn last_step_sounds() {
+        let mut pattern = Pattern {
+            melody: [None; sequencer::STEPS],
+            arpeggio: [None; sequencer::STEPS],
+            bass: [None; sequencer::STEPS],
+            drums: [None; sequencer::STEPS],
+            ..Pattern::default()
+        };
+        pattern.drums[sequencer::STEPS - 1] = Some(Drum::Snare);
+
+        let mut engine = PsgEngine::new(48_000);
+        trigger_step(&mut engine, &pattern, sequencer::STEPS - 1, [false; TRACKS]);
+        assert!(engine.active());
+    }
+
+    #[test]
     fn shared_channel_mutes_are_independent() {
         let mut pattern = Pattern {
             melody: [None; sequencer::STEPS],

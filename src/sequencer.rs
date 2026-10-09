@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-pub const STEPS: usize = 8;
+pub const STEPS: usize = 64;
+pub const PAGE_STEPS: usize = 8;
 pub const TRACKS: usize = 4;
 pub const DEFAULT_BPM: f64 = 120.0;
 
@@ -49,13 +50,17 @@ pub struct Pattern {
 }
 
 // Frequencies use equal-tempered C major notes in Hz.
-const MELODY: [f32; STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+const MELODY: [f32; PAGE_STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
+const VARIED_STEPS: [usize; 7] = [0, 1, 2, 3, 5, 6, 7];
 const CHORD: [f32; 3] = [261.63, 329.63, 392.0];
 
 impl Default for Pattern {
     fn default() -> Self {
         Self {
             melody: std::array::from_fn(|i| {
+                // Change one note per page; keep the first phrase intact.
+                let page = i / PAGE_STEPS;
+                let i = i % PAGE_STEPS;
                 let voice = if [0, 2, 5, 7].contains(&i) {
                     MelodyVoice::M1
                 } else if [1, 3, 6].contains(&i) {
@@ -63,24 +68,25 @@ impl Default for Pattern {
                 } else {
                     return None;
                 };
+                let note = if page > 0 && i == VARIED_STEPS[page - 1] {
+                    if i == PAGE_STEPS - 1 { i - 1 } else { i + 1 }
+                } else {
+                    i
+                };
                 Some(MelodyStep {
-                    freq: MELODY[i],
+                    freq: MELODY[note],
                     voice,
                 })
             }),
-            arpeggio: std::array::from_fn(|i| (i % 2 == 0).then_some(CHORD)),
+            arpeggio: std::array::from_fn(|i| i.is_multiple_of(2).then_some(CHORD)),
             // Leave channel C free on these steps so the bass can sound.
-            bass: std::array::from_fn(|i| [3, 5, 7].contains(&i).then_some(130.81)),
-            drums: [
-                Some(Drum::Kick),
-                None,
-                Some(Drum::ClosedHat),
-                None,
-                Some(Drum::Snare),
-                None,
-                Some(Drum::ClosedHat),
-                None,
-            ],
+            bass: std::array::from_fn(|i| [3, 5, 7].contains(&(i % PAGE_STEPS)).then_some(130.81)),
+            drums: std::array::from_fn(|i| match i % PAGE_STEPS {
+                0 => Some(Drum::Kick),
+                2 | 6 => Some(Drum::ClosedHat),
+                4 => Some(Drum::Snare),
+                _ => None,
+            }),
             melody_style: MelodyStyle::Pluck,
         }
     }
@@ -90,7 +96,7 @@ pub fn random_pattern() -> Pattern {
     Pattern {
         melody: std::array::from_fn(|i| {
             fastrand::bool().then(|| MelodyStep {
-                freq: MELODY[i],
+                freq: MELODY[i % PAGE_STEPS],
                 voice: if fastrand::bool() {
                     MelodyVoice::M1
                 } else {
@@ -203,12 +209,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_pattern_has_eight_steps() {
+    fn default_pattern_fills_all_pages() {
         let p = Pattern::default();
-        assert_eq!(p.melody.len(), 8);
-        assert_eq!(p.arpeggio.len(), 8);
-        assert_eq!(p.bass.len(), 8);
-        assert_eq!(p.drums.len(), 8);
+        assert_eq!(p.melody.len(), STEPS);
+        assert_eq!(p.arpeggio.len(), STEPS);
+        assert_eq!(p.bass.len(), STEPS);
+        assert_eq!(p.drums.len(), STEPS);
+
+        for page in 1..STEPS / PAGE_STEPS {
+            let start = page * PAGE_STEPS;
+            let changed = (0..PAGE_STEPS)
+                .filter(|&i| p.melody[start + i] != p.melody[i])
+                .collect::<Vec<_>>();
+            assert_eq!(changed, [VARIED_STEPS[page - 1]]);
+
+            for i in 0..PAGE_STEPS {
+                assert_eq!(
+                    p.melody[start + i].map(|n| n.voice),
+                    p.melody[i].map(|n| n.voice)
+                );
+                assert_eq!(p.arpeggio[start + i], p.arpeggio[i]);
+                assert_eq!(p.bass[start + i], p.bass[i]);
+                assert_eq!(p.drums[start + i], p.drums[i]);
+            }
+        }
     }
 
     #[test]
@@ -248,16 +272,22 @@ mod tests {
     }
 
     #[test]
-    fn clock_wraps_around_after_eight_steps() {
+    fn clock_wraps_around_after_64_steps() {
         let bpm = 240.0;
         let sr = 44100.0;
         let mut clock = AudioClock::new(sr);
         let threshold = clock.step_samples(bpm);
 
-        for _ in 0..(threshold * STEPS) {
+        for _ in 0..(threshold * (STEPS - 1)) {
+            clock.advance(bpm);
+        }
+        assert_eq!(clock.step, STEPS - 1);
+        assert_eq!(clock.advance(bpm), Some(STEPS - 1));
+        for _ in 1..threshold {
             clock.advance(bpm);
         }
         assert_eq!(clock.step, 0);
+        assert_eq!(clock.advance(bpm), Some(0));
     }
 
     #[test]
@@ -322,10 +352,16 @@ mod tests {
     }
 
     #[test]
-    fn random_pattern_has_eight_steps() {
+    fn random_pattern_has_64_steps() {
         let p = random_pattern();
-        assert_eq!(p.drums.len(), 8);
-        assert_eq!(p.melody.len(), 8);
+        assert_eq!(p.drums.len(), STEPS);
+        assert_eq!(p.melody.len(), STEPS);
+        assert_eq!(p.arpeggio.len(), STEPS);
+        assert_eq!(p.bass.len(), STEPS);
+
+        for note in p.melody.iter().flatten() {
+            assert!(MELODY.contains(&note.freq));
+        }
     }
 
     #[test]
