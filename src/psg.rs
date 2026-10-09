@@ -444,7 +444,7 @@ mod tests {
 
             let mut sample = 0;
             for tick in 1..20 {
-                let boundary = (tick * rate + PLAYER_HZ - 1) / PLAYER_HZ;
+                let boundary = (tick * rate).div_ceil(PLAYER_HZ);
                 while sample + 1 < boundary {
                     engine.next_sample();
                     sample += 1;
