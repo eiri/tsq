@@ -1,6 +1,8 @@
 use vizia::prelude::*;
 
-use crate::sequencer::{Audition, Drum, MelodyVoice, STEPS, SharedState, TRACKS, random_track};
+use crate::sequencer::{
+    Audition, Drum, MelodyVoice, PAGE_STEPS, STEPS, SharedState, TRACKS, random_track,
+};
 use crate::widgets::{EllipseButton, Heart, HeartState, Pip, PipState, StepDot, StepDotState};
 
 const STYLE: &str = r#"
@@ -129,6 +131,11 @@ fn step_color_bool(active: bool, is_current: bool) -> StepDotState {
     }
 }
 
+fn page_step(current: usize) -> (usize, usize, usize) {
+    let page = current / PAGE_STEPS;
+    (page, page * PAGE_STEPS, current % PAGE_STEPS)
+}
+
 fn melody_step_row(cx: &mut Context, steps: &[Option<MelodyVoice>], current: usize) {
     HStack::new(cx, |cx| {
         for (i, voice) in steps.iter().enumerate() {
@@ -157,10 +164,10 @@ fn step_color_drum(step: &Option<Drum>, is_current: bool) -> StepDotState {
     }
 }
 
-fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::ops::Range<usize>) {
+fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize) {
     HStack::new(cx, move |cx| {
-        for i in range {
-            let step_dot_state = step_color_bool(steps[i], i == current);
+        for (i, active) in steps.iter().enumerate() {
+            let step_dot_state = step_color_bool(*active, i == current);
             StepDot::new(cx, step_dot_state)
                 .width(Pixels(18.0))
                 .height(Pixels(18.0));
@@ -172,15 +179,10 @@ fn bool_step_row(cx: &mut Context, steps: &[bool], current: usize, range: std::o
     .horizontal_gap(Pixels(36.0));
 }
 
-fn drum_step_row(
-    cx: &mut Context,
-    steps: &[Option<Drum>],
-    current: usize,
-    range: std::ops::Range<usize>,
-) {
+fn drum_step_row(cx: &mut Context, steps: &[Option<Drum>], current: usize) {
     HStack::new(cx, move |cx| {
-        for i in range {
-            let step_dot_state = step_color_drum(&steps[i], i == current);
+        for (i, drum) in steps.iter().enumerate() {
+            let step_dot_state = step_color_drum(drum, i == current);
             StepDot::new(cx, step_dot_state)
                 .width(Pixels(18.0))
                 .height(Pixels(18.0));
@@ -283,13 +285,14 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
             VStack::new(cx, |cx| {
                 Binding::new(cx, current_step, move |cx| {
                     let current = current_step.get();
+                    let (page, start, column) = page_step(current);
 
                     // sequencer
                     VStack::new(cx, move |cx| {
-                        // One small light marks each step above its column.
+                        // The top lights mark the playing eight-step page.
                         HStack::new(cx, |cx| {
-                            for i in 0..STEPS {
-                                let state = if i == current {
+                            for i in 0..STEPS / PAGE_STEPS {
+                                let state = if i == page {
                                     PipState::On
                                 } else {
                                     PipState::Off
@@ -304,22 +307,22 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                         // steps
                         Binding::new(cx, melody, move |cx| {
                             let m = melody.get();
-                            melody_step_row(cx, &m, current);
+                            melody_step_row(cx, &m[start..start + PAGE_STEPS], column);
                         });
 
                         Binding::new(cx, arpeggio, move |cx| {
                             let s = arpeggio.get();
-                            bool_step_row(cx, &s, current, 0..STEPS);
+                            bool_step_row(cx, &s[start..start + PAGE_STEPS], column);
                         });
 
                         Binding::new(cx, bass, move |cx| {
                             let b = bass.get();
-                            bool_step_row(cx, &b, current, 0..STEPS);
+                            bool_step_row(cx, &b[start..start + PAGE_STEPS], column);
                         });
 
                         Binding::new(cx, drums, move |cx| {
                             let d = drums.get();
-                            drum_step_row(cx, &d, current, 0..STEPS);
+                            drum_step_row(cx, &d[start..start + PAGE_STEPS], column);
                         });
                     })
                     .alignment(Alignment::TopLeft)
@@ -409,6 +412,21 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
 mod tests {
     use super::*;
     use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn pages_follow_the_playhead() {
+        assert_eq!(page_step(0), (0, 0, 0));
+        assert_eq!(page_step(7), (0, 0, 7));
+        assert_eq!(page_step(8), (1, 8, 0));
+        assert_eq!(page_step(63), (7, 56, 7));
+
+        let pattern = crate::sequencer::Pattern::default();
+        let (_, start, column) = page_step(63);
+        assert_eq!(
+            pattern.drums[start..start + PAGE_STEPS][column],
+            pattern.drums[63]
+        );
+    }
 
     #[test]
     fn muted_marker_takes_priority() {

@@ -2,7 +2,7 @@
 name = "tsq"
 version = "0.1.0"
 edition = "2024"
-description = "A toy 8-step sequencer"
+description = "A toy sequencer"
 repository = "https://github.com/eiri/tsq"
 keywords = ["audio", "sequencer", "music"]
 categories = ["multimedia::audio"]
