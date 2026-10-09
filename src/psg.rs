@@ -73,7 +73,6 @@ pub struct PsgEngine {
     sample_rate: u32,
     tick_phase: u32,
     tick_pending: bool,
-    arp_notes: [f32; 3],
 }
 
 impl PsgEngine {
@@ -86,7 +85,6 @@ impl PsgEngine {
             sample_rate,
             tick_phase: 0,
             tick_pending: true,
-            arp_notes: [0.0; 3],
         };
         engine.configure();
         engine
@@ -98,7 +96,6 @@ impl PsgEngine {
         self.drum = None;
         self.tick_phase = 0;
         self.tick_pending = true;
-        self.arp_notes = [0.0; 3];
         self.configure();
     }
 
@@ -174,9 +171,8 @@ impl PsgEngine {
         self.start(MELODY, Voice::Melody2, 36, freq);
     }
 
-    pub fn arpeggio(&mut self, notes: [f32; 3]) {
-        self.arp_notes = notes;
-        self.start(ARPEGGIO, Voice::Arpeggio, 30, notes[0]);
+    pub fn arpeggio(&mut self, freq: f32) {
+        self.start(ARPEGGIO, Voice::Arpeggio, 12, freq);
     }
 
     pub fn bass(&mut self, freq: f32) {
@@ -225,8 +221,6 @@ impl PsgEngine {
             }
 
             let pitch = match note.voice {
-                // Return through the third after reaching the fifth.
-                Voice::Arpeggio => self.arp_notes[[0, 1, 2, 1][(note.age / 3) as usize % 4]],
                 Voice::Kick => 55.0 + 100.0 * (5 - note.age.min(5)) as f32 / 5.0,
                 Voice::Snare => 180.0,
                 Voice::ClosedHat | Voice::OpenHat => 0.0,
@@ -330,9 +324,9 @@ mod tests {
     }
 
     #[test]
-    fn arp_cycles_and_bass_borrows() {
+    fn arp_and_bass_borrow() {
         let mut engine = PsgEngine::new(48_000);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.bass(130.81);
         engine.next_sample();
         assert!(engine.chip.read_register(9) > 0);
@@ -340,33 +334,29 @@ mod tests {
         for _ in 1..2401 {
             engine.next_sample();
         }
-        assert_eq!(engine.chip.read_register(2), 83);
-        assert_eq!(engine.chip.read_register(3), 1);
+        let period = (MASTER_CLOCK as f32 / (16.0 * 261.63)).round() as u16;
+        assert_eq!(engine.chip.read_register(2), period as u8);
+        assert_eq!(engine.chip.read_register(3), (period >> 8) as u8);
         engine.kick();
         engine.bass(196.0);
         assert_eq!(engine.drum, Some(Drum::Kick));
     }
 
     #[test]
-    fn arpeggio_rises_and_falls() {
+    fn arpeggio_holds_one_pitch() {
         let mut engine = PsgEngine::new(48_000);
-        engine.arpeggio([261.63, 329.63, 392.0]);
-        for (age, expected) in [
-            (0, 261.63),
-            (3, 329.63),
-            (6, 392.0),
-            (9, 329.63),
-            (12, 261.63),
-        ] {
-            engine.notes[ARPEGGIO].age = age;
+        engine.arpeggio(261.63);
+        engine.tick();
+        let pitch = engine.chip.read_register(2);
+        for _ in 1..12 {
             engine.tick();
-            let period = (engine.chip.read_register(2) as u16)
-                | ((engine.chip.read_register(3) as u16) << 8);
-            assert_eq!(
-                period,
-                (MASTER_CLOCK as f32 / (16.0 * expected)).round() as u16
-            );
+            assert_eq!(engine.chip.read_register(2), pitch);
         }
+        assert_eq!(engine.chip.read_register(9), 0);
+
+        engine.arpeggio(329.63);
+        engine.tick();
+        assert_ne!(engine.chip.read_register(2), pitch);
     }
 
     #[test]
@@ -421,7 +411,7 @@ mod tests {
     fn mute_keeps_other_channels() {
         let mut engine = PsgEngine::new(48_000);
         engine.melody(440.0, MelodyStyle::Sustain);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.bass(130.81);
         engine.mute(0);
         assert!(!engine.notes[MELODY].active());
@@ -484,7 +474,7 @@ mod tests {
     #[test]
     fn registers_hold_between_ticks() {
         let mut engine = PsgEngine::new(48_000);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.next_sample();
         let initial_pitch = engine.chip.read_register(2);
         let initial_level = engine.chip.read_register(9);
@@ -502,7 +492,7 @@ mod tests {
         }
         assert_eq!(engine.chip.read_register(2), initial_pitch);
         engine.next_sample();
-        assert_eq!(engine.chip.read_register(2), 83);
+        assert_eq!(engine.chip.read_register(2), initial_pitch);
     }
 
     #[test]

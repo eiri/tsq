@@ -51,7 +51,8 @@ pub struct Pattern {
     pub tonic: u8,
     pub mode: Mode,
     pub melody: [Option<MelodyStep>; STEPS],
-    pub arpeggio: [Option<[f32; 3]>; STEPS],
+    pub arpeggio: [Option<f32>; STEPS],
+    pub(crate) arpeggio_roots: [u8; STEPS / PAGE_STEPS],
     pub bass: [Option<f32>; STEPS],
     pub drums: [Option<Drum>; STEPS],
     pub melody_style: MelodyStyle,
@@ -60,7 +61,7 @@ pub struct Pattern {
 // Frequencies use equal-tempered C major notes in Hz.
 const MELODY: [f32; PAGE_STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25];
 const VARIED_STEPS: [usize; 7] = [0, 1, 2, 3, 5, 6, 7];
-const CHORD: [f32; 3] = [261.63, 329.63, 392.0];
+const ARP_ORDER: [usize; 6] = [0, 1, 2, 2, 1, 0];
 
 fn scale(tonic: u8, mode: Mode) -> [f32; PAGE_STEPS] {
     let intervals = match mode {
@@ -80,26 +81,23 @@ fn melody_at(pattern: &Pattern, step: usize) -> f32 {
         .unwrap_or(scale(pattern.tonic, pattern.mode)[0])
 }
 
-fn chord_at(pattern: &Pattern, step: usize) -> [f32; 3] {
-    let notes = scale(pattern.tonic, pattern.mode);
-    let pitch = melody_at(pattern, step);
-    let root = notes
-        .iter()
-        .position(|&note| (note - pitch).abs() < 0.1)
-        .unwrap_or(0)
-        % 7;
+fn chord_at(tonic: u8, mode: Mode, root: u8) -> [f32; 3] {
+    let notes = scale(tonic, mode);
 
     // Stack thirds in the scale, lifting notes that cross the octave.
-    [root, root + 2, root + 4].map(|degree| {
+    [0, 2, 4].map(|offset| {
+        let degree = root as usize + offset;
         let octave = if degree >= 7 { 2.0 } else { 1.0 };
         notes[degree % 7] * octave
     })
 }
 
 fn set_arpeggios(pattern: &mut Pattern) {
-    for step in 0..STEPS {
-        if pattern.arpeggio[step].is_some() {
-            pattern.arpeggio[step] = Some(chord_at(pattern, step));
+    for page in 0..STEPS / PAGE_STEPS {
+        let chord = chord_at(pattern.tonic, pattern.mode, pattern.arpeggio_roots[page]);
+        for step in 0..PAGE_STEPS {
+            pattern.arpeggio[page * PAGE_STEPS + step] =
+                ARP_ORDER.get(step).map(|&note| chord[note]);
         }
     }
 }
@@ -142,7 +140,12 @@ impl Default for Pattern {
                     voice,
                 })
             }),
-            arpeggio: std::array::from_fn(|i| i.is_multiple_of(2).then_some(CHORD)),
+            arpeggio: std::array::from_fn(|i| {
+                ARP_ORDER
+                    .get(i % PAGE_STEPS)
+                    .map(|&n| chord_at(0, Mode::Major, 0)[n])
+            }),
+            arpeggio_roots: [0; STEPS / PAGE_STEPS],
             // Leave channel C free on these steps so the bass can sound.
             bass: std::array::from_fn(|i| [3, 5, 7].contains(&(i % PAGE_STEPS)).then_some(130.81)),
             drums: std::array::from_fn(|i| match i % PAGE_STEPS {
@@ -178,7 +181,8 @@ pub fn random_pattern() -> Pattern {
                 },
             })
         }),
-        arpeggio: std::array::from_fn(|_| fastrand::bool().then_some(CHORD)),
+        arpeggio: [None; STEPS],
+        arpeggio_roots: std::array::from_fn(|_| fastrand::u8(0..7)),
         bass: std::array::from_fn(|_| fastrand::bool().then_some(130.81)),
         drums: std::array::from_fn(|_| match fastrand::u8(0..5) {
             0 => Some(Drum::Kick),
@@ -217,7 +221,7 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
             }
             1 => {
                 let old = pattern.arpeggio;
-                pattern.arpeggio = next.arpeggio;
+                pattern.arpeggio_roots = next.arpeggio_roots;
                 set_arpeggios(pattern);
                 if pattern.arpeggio == old {
                     continue;
@@ -458,6 +462,11 @@ mod tests {
             if track != 0 {
                 assert_eq!((pattern.tonic, pattern.mode), (before.tonic, before.mode));
             }
+            if track != 1 {
+                assert_eq!(pattern.arpeggio_roots, before.arpeggio_roots);
+            } else {
+                assert_ne!(pattern.arpeggio_roots, before.arpeggio_roots);
+            }
             if track <= 2 {
                 let mut expected = pattern.clone();
                 set_arpeggios(&mut expected);
@@ -485,17 +494,41 @@ mod tests {
     #[test]
     fn chords_stack_scale_thirds() {
         for mode in [Mode::Major, Mode::Minor] {
+            let notes = scale(2, mode);
+            assert_eq!(
+                chord_at(2, mode, 5),
+                [notes[5], notes[0] * 2.0, notes[2] * 2.0]
+            );
+        }
+    }
+
+    #[test]
+    fn arpeggios_fill_six_steps_per_page() {
+        for mode in [Mode::Major, Mode::Minor] {
             let mut pattern = Pattern {
                 tonic: 2,
                 mode,
+                arpeggio_roots: [0, 1, 2, 3, 4, 5, 6, 0],
                 ..Pattern::default()
             };
-            let notes = scale(2, mode);
-            pattern.melody[0].as_mut().unwrap().freq = notes[5];
-            assert_eq!(
-                chord_at(&pattern, 0),
-                [notes[5], notes[0] * 2.0, notes[2] * 2.0]
-            );
+            set_arpeggios(&mut pattern);
+            for page in 0..STEPS / PAGE_STEPS {
+                let chord = chord_at(2, mode, pattern.arpeggio_roots[page]);
+                let start = page * PAGE_STEPS;
+                assert_eq!(
+                    pattern.arpeggio[start..start + PAGE_STEPS],
+                    [
+                        Some(chord[0]),
+                        Some(chord[1]),
+                        Some(chord[2]),
+                        Some(chord[2]),
+                        Some(chord[1]),
+                        Some(chord[0]),
+                        None,
+                        None
+                    ]
+                );
+            }
         }
     }
 
@@ -530,9 +563,12 @@ mod tests {
         }
         let mut hits = 0;
         for step in 0..STEPS {
-            if let Some(chord) = p.arpeggio[step] {
-                assert_eq!(chord, chord_at(&p, step));
-            }
+            let page = step / PAGE_STEPS;
+            let chord = chord_at(p.tonic, p.mode, p.arpeggio_roots[page]);
+            assert_eq!(
+                p.arpeggio[step],
+                ARP_ORDER.get(step % PAGE_STEPS).map(|&n| chord[n])
+            );
             if let Some(bass) = p.bass[step] {
                 assert_eq!(
                     bass,

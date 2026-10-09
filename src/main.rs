@@ -31,9 +31,9 @@ fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize, muted: [
         }
     }
     if !muted[1]
-        && let Some(notes) = pattern.arpeggio[step]
+        && let Some(freq) = pattern.arpeggio[step]
     {
-        engine.arpeggio(notes);
+        engine.arpeggio(freq);
     }
     // Drums take channel C if bass and drums start on the same step.
     if !muted[2]
@@ -52,7 +52,7 @@ fn trigger_audition(engine: &mut PsgEngine, request: Audition) {
     match request {
         Audition::Melody => engine.melody(440.0, sequencer::MelodyStyle::Sustain),
         Audition::Melody2 => engine.melody2(440.0),
-        Audition::Arpeggio => engine.arpeggio([261.63, 329.63, 392.0]),
+        Audition::Arpeggio => engine.arpeggio(261.63),
         Audition::Bass => engine.bass(130.81),
         Audition::Drum(drum) => trigger_drum(engine, drum),
     }
@@ -219,7 +219,7 @@ mod tests {
                         voice: MelodyVoice::M2,
                     })
                 }
-                2 => pattern.arpeggio[0] = Some([261.63, 329.63, 392.0]),
+                2 => pattern.arpeggio[0] = Some(261.63),
                 3 => pattern.bass[0] = Some(130.81),
                 _ => pattern.drums[0] = Some(Drum::Snare),
             }
