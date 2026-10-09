@@ -182,7 +182,8 @@ impl PsgEngine {
         }
         self.drum = None;
         self.set_mixer(0x38);
-        self.start(BASS, Voice::Bass, 27, freq);
+        // End each bass hit before the next sequencer step at 120 BPM.
+        self.start(BASS, Voice::Bass, 8, freq);
     }
 
     pub fn mute(&mut self, track: usize) {
@@ -371,6 +372,29 @@ mod tests {
         }
         assert!(!engine.active());
         assert_eq!(engine.chip.read_register(10), 0);
+    }
+
+    #[test]
+    fn bass_hits_have_a_gap() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.bass(130.81);
+
+        // A step lasts 15 player ticks at 120 BPM.
+        for tick in 0..15 {
+            engine.tick();
+            if tick < 7 {
+                assert!(engine.notes[BASS].active());
+                assert!(engine.chip.read_register(10) > 0);
+            } else {
+                assert!(!engine.notes[BASS].active());
+                assert_eq!(engine.chip.read_register(10), 0);
+            }
+        }
+
+        engine.bass(130.81);
+        engine.tick();
+        assert!(engine.notes[BASS].active());
+        assert_eq!(engine.chip.read_register(10), 9);
     }
 
     #[test]
