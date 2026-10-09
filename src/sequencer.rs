@@ -40,8 +40,16 @@ pub enum Audition {
     Drum(Drum),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Major,
+    Minor,
+}
+
 #[derive(Clone)]
 pub struct Pattern {
+    pub tonic: u8,
+    pub mode: Mode,
     pub melody: [Option<MelodyStep>; STEPS],
     pub arpeggio: [Option<[f32; 3]>; STEPS],
     pub bass: [Option<f32>; STEPS],
@@ -54,9 +62,22 @@ const MELODY: [f32; PAGE_STEPS] = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0,
 const VARIED_STEPS: [usize; 7] = [0, 1, 2, 3, 5, 6, 7];
 const CHORD: [f32; 3] = [261.63, 329.63, 392.0];
 
+fn scale(tonic: u8, mode: Mode) -> [f32; PAGE_STEPS] {
+    let intervals = match mode {
+        Mode::Major => [0, 2, 4, 5, 7, 9, 11, 12],
+        Mode::Minor => [0, 2, 3, 5, 7, 8, 10, 12],
+    };
+
+    // MIDI note 60 is middle C; keep generated notes above it.
+    intervals
+        .map(|interval| 440.0 * 2.0_f32.powf((60.0 + tonic as f32 + interval as f32 - 69.0) / 12.0))
+}
+
 impl Default for Pattern {
     fn default() -> Self {
         Self {
+            tonic: 0,
+            mode: Mode::Major,
             melody: std::array::from_fn(|i| {
                 // Change one note per page; keep the first phrase intact.
                 let page = i / PAGE_STEPS;
@@ -93,10 +114,20 @@ impl Default for Pattern {
 }
 
 pub fn random_pattern() -> Pattern {
+    let tonic = fastrand::u8(0..12);
+    let mode = if fastrand::bool() {
+        Mode::Major
+    } else {
+        Mode::Minor
+    };
+    let notes = scale(tonic, mode);
+
     Pattern {
+        tonic,
+        mode,
         melody: std::array::from_fn(|i| {
             fastrand::bool().then(|| MelodyStep {
-                freq: MELODY[i % PAGE_STEPS],
+                freq: notes[i % PAGE_STEPS],
                 voice: if fastrand::bool() {
                     MelodyVoice::M1
                 } else {
@@ -126,7 +157,13 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
     loop {
         let next = random_pattern();
         match track {
-            0 if pattern.melody != next.melody || pattern.melody_style != next.melody_style => {
+            0 if pattern.melody != next.melody
+                || pattern.melody_style != next.melody_style
+                || pattern.tonic != next.tonic
+                || pattern.mode != next.mode =>
+            {
+                pattern.tonic = next.tonic;
+                pattern.mode = next.mode;
                 pattern.melody = next.melody;
                 pattern.melody_style = next.melody_style;
             }
@@ -352,6 +389,16 @@ mod tests {
     }
 
     #[test]
+    fn scale_uses_major_and_minor_intervals() {
+        let major = scale(0, Mode::Major);
+        let minor = scale(0, Mode::Minor);
+        assert_eq!(major[0], minor[0]);
+        assert!(major[2] > minor[2]);
+        assert!(major[5] > minor[5]);
+        assert!((major[7] / major[0] - 2.0).abs() < 0.001);
+    }
+
+    #[test]
     fn random_pattern_has_64_steps() {
         let p = random_pattern();
         assert_eq!(p.drums.len(), STEPS);
@@ -360,7 +407,7 @@ mod tests {
         assert_eq!(p.bass.len(), STEPS);
 
         for note in p.melody.iter().flatten() {
-            assert!(MELODY.contains(&note.freq));
+            assert!(scale(p.tonic, p.mode).contains(&note.freq));
         }
     }
 
