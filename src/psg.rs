@@ -435,6 +435,71 @@ mod tests {
     }
 
     #[test]
+    fn ticks_keep_time_at_any_audio_rate() {
+        for rate in [44_100, 44_117, 48_000, 96_000] {
+            let mut engine = PsgEngine::new(rate);
+            engine.melody(440.0, MelodyStyle::Sustain);
+            engine.next_sample();
+            assert_eq!(engine.notes[MELODY].age, 1);
+
+            let mut sample = 0;
+            for tick in 1..20 {
+                let boundary = (tick * rate + PLAYER_HZ - 1) / PLAYER_HZ;
+                while sample + 1 < boundary {
+                    engine.next_sample();
+                    sample += 1;
+                }
+                assert_eq!(engine.notes[MELODY].age, tick);
+
+                engine.next_sample();
+                sample += 1;
+                assert_eq!(engine.notes[MELODY].age, tick + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn registers_hold_between_ticks() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.next_sample();
+        let initial_pitch = engine.chip.read_register(2);
+        let initial_level = engine.chip.read_register(9);
+
+        for _ in 1..800 {
+            engine.next_sample();
+        }
+        assert_eq!(engine.chip.read_register(2), initial_pitch);
+        assert_eq!(engine.chip.read_register(9), initial_level);
+
+        engine.next_sample();
+        assert!(engine.chip.read_register(9) < initial_level);
+        for _ in 801..2400 {
+            engine.next_sample();
+        }
+        assert_eq!(engine.chip.read_register(2), initial_pitch);
+        engine.next_sample();
+        assert_eq!(engine.chip.read_register(2), 83);
+    }
+
+    #[test]
+    fn drum_releases_channel_c() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.snare();
+        engine.next_sample();
+        assert_eq!(engine.mixer, 0x98);
+        for _ in 1..12_000 {
+            engine.next_sample();
+        }
+        assert_eq!(engine.mixer, 0xb8);
+        assert_eq!(engine.chip.read_register(10), 0);
+        engine.bass(130.81);
+        engine.next_sample();
+        assert_eq!(engine.drum, None);
+        assert_eq!(engine.chip.read_register(10), 9);
+    }
+
+    #[test]
     fn retrigger_restores_volume() {
         let mut engine = PsgEngine::new(48_000);
         engine.melody(440.0, MelodyStyle::Pluck);
