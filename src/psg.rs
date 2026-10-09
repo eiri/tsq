@@ -2,7 +2,8 @@ use ym2149::{Ym2149, Ym2149Backend};
 
 use crate::sequencer::{Drum, MelodyStyle};
 
-const MASTER_CLOCK: u32 = 2_000_000;
+const MASTER_CLOCK: u32 = 1_789_773;
+const MSX_PORT_MODE: u8 = 0x80;
 const MELODY: usize = 0;
 const ARPEGGIO: usize = 1;
 const BASS: usize = 2;
@@ -30,6 +31,7 @@ impl Note {
 
 pub struct PsgEngine {
     chip: Ym2149,
+    mixer: u8,
     notes: [Note; 3],
     drum: Option<Drum>,
     melody2: bool,
@@ -45,6 +47,7 @@ impl PsgEngine {
     pub fn new(sample_rate: u32) -> Self {
         let mut engine = Self {
             chip: Ym2149::with_clocks(MASTER_CLOCK, sample_rate),
+            mixer: MSX_PORT_MODE,
             notes: std::array::from_fn(|_| Note::default()),
             drum: None,
             melody2: false,
@@ -72,9 +75,15 @@ impl PsgEngine {
         self.configure();
     }
 
+    fn set_mixer(&mut self, sound: u8) {
+        // Keep MSX port A as input and port B as output.
+        self.mixer = MSX_PORT_MODE | (sound & 0x3f);
+        self.chip.write_register(7, self.mixer);
+    }
+
     fn configure(&mut self) {
         // All tone channels are enabled; noise starts disabled.
-        self.chip.write_register(7, 0x38);
+        self.set_mixer(0x38);
         for channel in 0..3 {
             self.chip.write_register(8 + channel, 0);
         }
@@ -101,14 +110,11 @@ impl PsgEngine {
                 Drum::ClosedHat | Drum::OpenHat => 3,
             },
         );
-        self.chip.write_register(
-            7,
-            match kind {
-                Drum::Kick => 0x38,
-                Drum::Snare => 0x18, // Snare combines tone and noise on C.
-                _ => 0x1c,           // Hats use noise only on C.
-            },
-        );
+        self.set_mixer(match kind {
+            Drum::Kick => 0x38,
+            Drum::Snare => 0x18, // Snare combines tone and noise on C.
+            _ => 0x1c,           // Hats use noise only on C.
+        });
     }
 
     pub fn kick(&mut self) {
@@ -159,7 +165,7 @@ impl PsgEngine {
         }
         self.drum = None;
         // Disable tone C and use its stepped volume as a soft bass waveform.
-        self.chip.write_register(7, 0x3c);
+        self.set_mixer(0x3c);
         self.bass_freq = freq;
         self.bass_age = 0;
         self.notes[BASS].start(self.samples(0.45), 9);
@@ -174,7 +180,7 @@ impl PsgEngine {
             2 if self.drum.is_none() => Some(BASS),
             3 if self.drum.is_some() => {
                 self.drum = None;
-                self.chip.write_register(7, 0x38);
+                self.set_mixer(0x38);
                 Some(BASS)
             }
             _ => None,
@@ -192,7 +198,7 @@ impl PsgEngine {
     pub fn next_sample(&mut self) -> f32 {
         // Release the borrowed channel when the drum ends.
         if self.notes[BASS].left == 0 && self.drum.take().is_some() {
-            self.chip.write_register(7, 0x38);
+            self.set_mixer(0x38);
         }
 
         let mut levels = std::array::from_fn::<_, 3, _>(|i| self.notes[i].level());
@@ -286,6 +292,7 @@ mod tests {
         assert!(engine.chip.read_register(10) > 0);
         assert_eq!(engine.chip.read_register(9), 0);
         assert_eq!(engine.chip.read_register(7), 0x38);
+        assert_eq!(engine.mixer, 0xb8);
     }
 
     #[test]
@@ -293,6 +300,7 @@ mod tests {
         let mut engine = PsgEngine::new(48_000);
         engine.snare();
         assert_eq!(engine.chip.read_register(7), 0x18);
+        assert_eq!(engine.mixer, 0x98);
         engine.kick();
         assert_eq!(engine.chip.read_register(7), 0x38);
         engine.hihat(false); // Lower-priority drum cannot interrupt the kick.
@@ -300,6 +308,7 @@ mod tests {
         let mut hat = PsgEngine::new(48_000);
         hat.hihat(false);
         assert_eq!(hat.chip.read_register(7), 0x1c);
+        assert_eq!(hat.mixer, 0x9c);
     }
 
     #[test]
@@ -333,7 +342,7 @@ mod tests {
         for _ in 100..2001 {
             engine.next_sample();
         }
-        assert_eq!(engine.chip.read_register(2), 123); // 329.63 Hz: period 379.
+        assert_eq!(engine.chip.read_register(2), 83); // 329.63 Hz: period 339.
         assert_eq!(engine.chip.read_register(3), 1);
         engine.kick();
         engine.bass(196.0);
@@ -386,8 +395,8 @@ mod tests {
         engine.melody2(440.0);
         engine.next_sample();
         assert_eq!(engine.chip.read_register(8), 0);
-        assert_eq!(engine.chip.read_register(0), 28); // Same pitch as M1.
-        assert_eq!(engine.chip.read_register(1), 1);
+        assert_eq!(engine.chip.read_register(0), 254); // MSX clock: 440 Hz.
+        assert_eq!(engine.chip.read_register(1), 0);
 
         for _ in 0..48_000 / 4 {
             engine.next_sample();
