@@ -24,9 +24,9 @@ A toy 8-step music sequencer that uses emulated YM2149 sound chip.
 | `r`     | Randomize selected track  |
 | `CMD+Q` | Quit                      |
 
-## Notes
+## Implementation details
 
-The pattern plays at 120 beats per minute. Bass and drums share one chip channel, so a drum can interrupt a bass note.
+`tsq` uses an emulated YM2149 chip clocked at the MSX rate of about 1.79 MHz. A 60 Hz player changes pitch, volume, and noise settings while the chip generates the sound between updates. Melody uses channel A, arpeggios use B, and bass and drums take turns on C. Each voice follows its own software volume sequence since the chip has only one shared hardware envelope. Bass and drums share same channel, so drums can cut off bass notes.
 
 ## Build & Run
 
