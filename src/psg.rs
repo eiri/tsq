@@ -225,7 +225,8 @@ impl PsgEngine {
             }
 
             let pitch = match note.voice {
-                Voice::Arpeggio => self.arp_notes[(note.age / 3) as usize % 3],
+                // Return through the third after reaching the fifth.
+                Voice::Arpeggio => self.arp_notes[[0, 1, 2, 1][(note.age / 3) as usize % 4]],
                 Voice::Kick => 55.0 + 100.0 * (5 - note.age.min(5)) as f32 / 5.0,
                 Voice::Snare => 180.0,
                 Voice::ClosedHat | Voice::OpenHat => 0.0,
@@ -344,6 +345,28 @@ mod tests {
         engine.kick();
         engine.bass(196.0);
         assert_eq!(engine.drum, Some(Drum::Kick));
+    }
+
+    #[test]
+    fn arpeggio_rises_and_falls() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.arpeggio([261.63, 329.63, 392.0]);
+        for (age, expected) in [
+            (0, 261.63),
+            (3, 329.63),
+            (6, 392.0),
+            (9, 329.63),
+            (12, 261.63),
+        ] {
+            engine.notes[ARPEGGIO].age = age;
+            engine.tick();
+            let period = (engine.chip.read_register(2) as u16)
+                | ((engine.chip.read_register(3) as u16) << 8);
+            assert_eq!(
+                period,
+                (MASTER_CLOCK as f32 / (16.0 * expected)).round() as u16
+            );
+        }
     }
 
     #[test]

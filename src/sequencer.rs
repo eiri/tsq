@@ -73,6 +73,29 @@ fn scale(tonic: u8, mode: Mode) -> [f32; PAGE_STEPS] {
         .map(|interval| 440.0 * 2.0_f32.powf((60.0 + tonic as f32 + interval as f32 - 69.0) / 12.0))
 }
 
+fn chord_at(pattern: &Pattern, step: usize) -> [f32; 3] {
+    let notes = scale(pattern.tonic, pattern.mode);
+    let pitch = (0..STEPS)
+        .map(|back| (step + STEPS - back) % STEPS)
+        .find_map(|i| pattern.melody[i].map(|note| note.freq))
+        .unwrap_or(notes[0]);
+    let root = notes.iter().position(|&note| note == pitch).unwrap_or(0) % 7;
+
+    // Stack thirds in the scale, lifting notes that cross the octave.
+    [root, root + 2, root + 4].map(|degree| {
+        let octave = if degree >= 7 { 2.0 } else { 1.0 };
+        notes[degree % 7] * octave
+    })
+}
+
+fn set_arpeggios(pattern: &mut Pattern) {
+    for step in 0..STEPS {
+        if pattern.arpeggio[step].is_some() {
+            pattern.arpeggio[step] = Some(chord_at(pattern, step));
+        }
+    }
+}
+
 impl Default for Pattern {
     fn default() -> Self {
         Self {
@@ -122,7 +145,7 @@ pub fn random_pattern() -> Pattern {
     };
     let notes = scale(tonic, mode);
 
-    Pattern {
+    let mut pattern = Pattern {
         tonic,
         mode,
         melody: std::array::from_fn(|i| {
@@ -149,7 +172,9 @@ pub fn random_pattern() -> Pattern {
         } else {
             MelodyStyle::Sustain
         },
-    }
+    };
+    set_arpeggios(&mut pattern);
+    pattern
 }
 
 pub fn random_track(pattern: &mut Pattern, track: usize) {
@@ -166,8 +191,16 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                 pattern.mode = next.mode;
                 pattern.melody = next.melody;
                 pattern.melody_style = next.melody_style;
+                set_arpeggios(pattern);
             }
-            1 if pattern.arpeggio != next.arpeggio => pattern.arpeggio = next.arpeggio,
+            1 => {
+                let old = pattern.arpeggio;
+                pattern.arpeggio = next.arpeggio;
+                set_arpeggios(pattern);
+                if pattern.arpeggio == old {
+                    continue;
+                }
+            }
             2 if pattern.bass != next.bass => pattern.bass = next.bass,
             3 if pattern.drums != next.drums => pattern.drums = next.drums,
             0..=3 => continue,
@@ -382,7 +415,11 @@ mod tests {
                 pattern.melody == before.melody && pattern.melody_style == before.melody_style,
                 track != 0
             );
-            assert_eq!(pattern.arpeggio == before.arpeggio, track != 1);
+            if track >= 2 {
+                assert_eq!(pattern.arpeggio, before.arpeggio);
+            } else if track == 1 {
+                assert_ne!(pattern.arpeggio, before.arpeggio);
+            }
             assert_eq!(pattern.bass == before.bass, track != 2);
             assert_eq!(pattern.drums == before.drums, track != 3);
         }
@@ -399,6 +436,23 @@ mod tests {
     }
 
     #[test]
+    fn chords_stack_scale_thirds() {
+        for mode in [Mode::Major, Mode::Minor] {
+            let mut pattern = Pattern {
+                tonic: 2,
+                mode,
+                ..Pattern::default()
+            };
+            let notes = scale(2, mode);
+            pattern.melody[0].as_mut().unwrap().freq = notes[5];
+            assert_eq!(
+                chord_at(&pattern, 0),
+                [notes[5], notes[0] * 2.0, notes[2] * 2.0]
+            );
+        }
+    }
+
+    #[test]
     fn random_pattern_has_64_steps() {
         let p = random_pattern();
         assert_eq!(p.drums.len(), STEPS);
@@ -406,8 +460,14 @@ mod tests {
         assert_eq!(p.arpeggio.len(), STEPS);
         assert_eq!(p.bass.len(), STEPS);
 
+        let notes = scale(p.tonic, p.mode);
         for note in p.melody.iter().flatten() {
-            assert!(scale(p.tonic, p.mode).contains(&note.freq));
+            assert!(notes.contains(&note.freq));
+        }
+        for (step, chord) in p.arpeggio.iter().enumerate() {
+            if let Some(chord) = chord {
+                assert_eq!(*chord, chord_at(&p, step));
+            }
         }
     }
 
