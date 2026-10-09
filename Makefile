@@ -9,7 +9,9 @@ run:
 
 .PHONY: check
 check:
-	cargo check
+	cargo fmt --check
+	cargo test
+	$(MAKE) lint
 
 .PHONY: build
 build:
@@ -25,7 +27,7 @@ test:
 
 .PHONY: lint
 lint:
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --no-deps --all-targets --all-features -- -D warnings
 
 .PHONY: clean
 clean:
