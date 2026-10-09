@@ -73,13 +73,21 @@ fn scale(tonic: u8, mode: Mode) -> [f32; PAGE_STEPS] {
         .map(|interval| 440.0 * 2.0_f32.powf((60.0 + tonic as f32 + interval as f32 - 69.0) / 12.0))
 }
 
-fn chord_at(pattern: &Pattern, step: usize) -> [f32; 3] {
-    let notes = scale(pattern.tonic, pattern.mode);
-    let pitch = (0..STEPS)
+fn melody_at(pattern: &Pattern, step: usize) -> f32 {
+    (0..STEPS)
         .map(|back| (step + STEPS - back) % STEPS)
         .find_map(|i| pattern.melody[i].map(|note| note.freq))
-        .unwrap_or(notes[0]);
-    let root = notes.iter().position(|&note| note == pitch).unwrap_or(0) % 7;
+        .unwrap_or(scale(pattern.tonic, pattern.mode)[0])
+}
+
+fn chord_at(pattern: &Pattern, step: usize) -> [f32; 3] {
+    let notes = scale(pattern.tonic, pattern.mode);
+    let pitch = melody_at(pattern, step);
+    let root = notes
+        .iter()
+        .position(|&note| (note - pitch).abs() < 0.1)
+        .unwrap_or(0)
+        % 7;
 
     // Stack thirds in the scale, lifting notes that cross the octave.
     [root, root + 2, root + 4].map(|degree| {
@@ -92,6 +100,18 @@ fn set_arpeggios(pattern: &mut Pattern) {
     for step in 0..STEPS {
         if pattern.arpeggio[step].is_some() {
             pattern.arpeggio[step] = Some(chord_at(pattern, step));
+        }
+    }
+}
+
+fn set_bass(pattern: &mut Pattern) {
+    let mut hits = 0;
+    for step in 0..STEPS {
+        if pattern.bass[step].is_some() {
+            // Alternate the melody pitch with its octave on successive bass hits.
+            let octave = if hits % 2 == 0 { 1.0 } else { 2.0 };
+            pattern.bass[step] = Some(melody_at(pattern, step) * octave);
+            hits += 1;
         }
     }
 }
@@ -174,6 +194,7 @@ pub fn random_pattern() -> Pattern {
         },
     };
     set_arpeggios(&mut pattern);
+    set_bass(&mut pattern);
     pattern
 }
 
@@ -192,6 +213,7 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                 pattern.melody = next.melody;
                 pattern.melody_style = next.melody_style;
                 set_arpeggios(pattern);
+                set_bass(pattern);
             }
             1 => {
                 let old = pattern.arpeggio;
@@ -201,7 +223,14 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                     continue;
                 }
             }
-            2 if pattern.bass != next.bass => pattern.bass = next.bass,
+            2 => {
+                let old = pattern.bass;
+                pattern.bass = next.bass;
+                set_bass(pattern);
+                if pattern.bass == old {
+                    continue;
+                }
+            }
             3 if pattern.drums != next.drums => pattern.drums = next.drums,
             0..=3 => continue,
             _ => return,
@@ -420,8 +449,26 @@ mod tests {
             } else if track == 1 {
                 assert_ne!(pattern.arpeggio, before.arpeggio);
             }
-            assert_eq!(pattern.bass == before.bass, track != 2);
+            if track >= 1 && track != 2 {
+                assert_eq!(pattern.bass, before.bass);
+            } else if track == 2 {
+                assert_ne!(pattern.bass, before.bass);
+            }
             assert_eq!(pattern.drums == before.drums, track != 3);
+            if track != 0 {
+                assert_eq!((pattern.tonic, pattern.mode), (before.tonic, before.mode));
+            }
+            if track <= 2 {
+                let mut expected = pattern.clone();
+                set_arpeggios(&mut expected);
+                set_bass(&mut expected);
+                if track == 0 || track == 1 {
+                    assert_eq!(pattern.arpeggio, expected.arpeggio);
+                }
+                if track == 0 || track == 2 {
+                    assert_eq!(pattern.bass, expected.bass);
+                }
+            }
         }
     }
 
@@ -453,6 +500,23 @@ mod tests {
     }
 
     #[test]
+    fn bass_repeats_melody_at_next_octave() {
+        let mut pattern = Pattern {
+            bass: [None; STEPS],
+            ..Pattern::default()
+        };
+        pattern.bass[0] = Some(0.0);
+        pattern.bass[1] = Some(0.0);
+        pattern.bass[3] = Some(0.0);
+        pattern.melody[1] = None;
+        set_bass(&mut pattern);
+
+        assert_eq!(pattern.bass[0], Some(pattern.melody[0].unwrap().freq));
+        assert_eq!(pattern.bass[1], Some(pattern.melody[0].unwrap().freq * 2.0));
+        assert_eq!(pattern.bass[3], Some(pattern.melody[3].unwrap().freq));
+    }
+
+    #[test]
     fn random_pattern_has_64_steps() {
         let p = random_pattern();
         assert_eq!(p.drums.len(), STEPS);
@@ -464,9 +528,17 @@ mod tests {
         for note in p.melody.iter().flatten() {
             assert!(notes.contains(&note.freq));
         }
-        for (step, chord) in p.arpeggio.iter().enumerate() {
-            if let Some(chord) = chord {
-                assert_eq!(*chord, chord_at(&p, step));
+        let mut hits = 0;
+        for step in 0..STEPS {
+            if let Some(chord) = p.arpeggio[step] {
+                assert_eq!(chord, chord_at(&p, step));
+            }
+            if let Some(bass) = p.bass[step] {
+                assert_eq!(
+                    bass,
+                    melody_at(&p, step) * if hits % 2 == 0 { 1.0 } else { 2.0 }
+                );
+                hits += 1;
             }
         }
     }
