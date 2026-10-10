@@ -1,6 +1,6 @@
 use ym2149::{Ym2149, Ym2149Backend};
 
-use crate::sequencer::{Drum, MelodyStyle};
+use crate::sequencer::{Drum, MelodyStep, MelodyStyle, MelodyVoice};
 
 const MASTER_CLOCK: u32 = 1_789_773;
 const PLAYER_HZ: u32 = 60;
@@ -30,6 +30,7 @@ struct Note {
     age: u32,
     length: u32,
     freq: f32,
+    bend: bool,
 }
 
 impl Note {
@@ -39,6 +40,7 @@ impl Note {
             age: 0,
             length,
             freq,
+            bend: false,
         };
     }
 
@@ -171,6 +173,18 @@ impl PsgEngine {
         self.start(MELODY, Voice::Melody2, 36, freq);
     }
 
+    pub fn melody_step(&mut self, note: MelodyStep, style: MelodyStyle) {
+        match note.voice {
+            MelodyVoice::M1 => self.melody(note.freq, style),
+            MelodyVoice::M2 => self.melody2(note.freq),
+        }
+        // A short gate ends before the next eighth-note step at 120 BPM.
+        if note.short {
+            self.notes[MELODY].length = 8;
+        }
+        self.notes[MELODY].bend = note.bend;
+    }
+
     pub fn arpeggio(&mut self, freq: f32) {
         self.start(ARPEGGIO, Voice::Arpeggio, 12, freq);
     }
@@ -225,6 +239,11 @@ impl PsgEngine {
                 Voice::Kick => 55.0 + 100.0 * (5 - note.age.min(5)) as f32 / 5.0,
                 Voice::Snare => 180.0,
                 Voice::ClosedHat | Voice::OpenHat => 0.0,
+                _ if note.bend => {
+                    // Rise by a quarter-tone over four 60 Hz ticks.
+                    let fraction = (4 - note.age.min(4)) as f32 / 4.0;
+                    note.freq * 2.0_f32.powf(-fraction / 48.0)
+                }
                 _ => note.freq,
             };
             if pitch > 0.0 {
@@ -429,6 +448,53 @@ mod tests {
         engine.melody(440.0, MelodyStyle::Pluck);
         engine.next_sample();
         assert_eq!(engine.chip.read_register(8), 11);
+    }
+
+    #[test]
+    fn melody_step_cuts_and_bends() {
+        for voice in [MelodyVoice::M1, MelodyVoice::M2] {
+            let mut engine = PsgEngine::new(48_000);
+            engine.melody_step(
+                MelodyStep {
+                    freq: 440.0,
+                    voice,
+                    short: true,
+                    bend: true,
+                },
+                MelodyStyle::Sustain,
+            );
+            engine.tick();
+            let period = |engine: &PsgEngine| {
+                u16::from(engine.chip.read_register(0))
+                    | (u16::from(engine.chip.read_register(1)) << 8)
+            };
+            let first = period(&engine);
+            for _ in 1..5 {
+                engine.tick();
+            }
+            let settled = period(&engine);
+            assert!(first > settled);
+            assert_eq!(settled, 254);
+            for _ in 5..8 {
+                engine.tick();
+            }
+            assert!(!engine.active());
+            assert_eq!(engine.chip.read_register(8), 0);
+
+            // Ordinary notes still use the voice's full length and fixed pitch.
+            engine.melody_step(
+                MelodyStep {
+                    freq: 440.0,
+                    voice,
+                    short: false,
+                    bend: false,
+                },
+                MelodyStyle::Sustain,
+            );
+            engine.tick();
+            assert_eq!(period(&engine), settled);
+            assert_eq!(engine.notes[MELODY].length, 36);
+        }
     }
 
     #[test]

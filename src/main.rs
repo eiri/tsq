@@ -8,9 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{
-    AudioClock, Audition, Drum, MelodyVoice, Pattern, SharedState, TRACKS, new_shared_state,
-};
+use sequencer::{AudioClock, Audition, Drum, Pattern, SharedState, TRACKS, new_shared_state};
 
 fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
     match drum {
@@ -25,10 +23,7 @@ fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize, muted: [
     if !muted[0]
         && let Some(note) = pattern.melody[step]
     {
-        match note.voice {
-            MelodyVoice::M1 => engine.melody(note.freq, pattern.melody_style),
-            MelodyVoice::M2 => engine.melody2(note.freq),
-        }
+        engine.melody_step(note, pattern.melody_style);
     }
     if !muted[1]
         && let Some(freq) = pattern.arpeggio[step]
@@ -210,13 +205,17 @@ mod tests {
                 0 => {
                     pattern.melody[0] = Some(sequencer::MelodyStep {
                         freq: 440.0,
-                        voice: MelodyVoice::M1,
+                        voice: sequencer::MelodyVoice::M1,
+                        short: false,
+                        bend: false,
                     })
                 }
                 1 => {
                     pattern.melody[0] = Some(sequencer::MelodyStep {
                         freq: 440.0,
-                        voice: MelodyVoice::M2,
+                        voice: sequencer::MelodyVoice::M2,
+                        short: false,
+                        bend: false,
                     })
                 }
                 2 => pattern.arpeggio[0] = Some(261.63),

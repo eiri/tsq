@@ -492,6 +492,8 @@ mod tests {
             s.pattern.melody[4] = Some(crate::sequencer::MelodyStep {
                 freq: 392.0,
                 voice: crate::sequencer::MelodyVoice::M2,
+                short: false,
+                bend: false,
             });
             s.playing = true;
         }

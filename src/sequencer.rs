@@ -21,6 +21,8 @@ pub enum MelodyVoice {
 pub struct MelodyStep {
     pub freq: f32,
     pub voice: MelodyVoice,
+    pub short: bool,
+    pub bend: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +178,8 @@ impl Default for Pattern {
                 (note != 0).then(|| MelodyStep {
                     freq: 440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0),
                     voice: MelodyVoice::M1,
+                    short: false,
+                    bend: false,
                 })
             }),
             arpeggio: [None; STEPS],
@@ -236,6 +240,9 @@ fn random_melody(tonic: u8, mode: Mode, rng: &mut fastrand::Rng) -> [Option<Melo
         degrees[i] = pitch;
     }
 
+    let mut short: [bool; PAGE_STEPS] = std::array::from_fn(|_| rng.bool());
+    short[0] = false;
+    short[PAGE_STEPS - 1] = true;
     let mut melody = [None; STEPS];
     for page in 0..STEPS / PAGE_STEPS {
         for i in 0..PAGE_STEPS {
@@ -256,6 +263,8 @@ fn random_melody(tonic: u8, mode: Mode, rng: &mut fastrand::Rng) -> [Option<Melo
             melody[page * PAGE_STEPS + i] = Some(MelodyStep {
                 freq: notes[degree],
                 voice,
+                short: short[i],
+                bend: page == 7 && i == PAGE_STEPS - 1,
             });
         }
     }
@@ -783,6 +792,10 @@ mod tests {
                 assert_eq!(differences, 1);
             }
             assert_eq!(melody[STEPS - 1].unwrap().freq, notes[0]);
+            assert_eq!(melody.iter().flatten().filter(|note| note.bend).count(), 1);
+            assert!(melody[STEPS - 1].unwrap().bend);
+            assert!(bar[0].is_some_and(|note| !note.short));
+            assert!(bar[PAGE_STEPS - 1].is_some_and(|note| note.short));
             let first = notes
                 .iter()
                 .position(|&n| n == bar[0].unwrap().freq)
