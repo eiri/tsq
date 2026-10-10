@@ -7,21 +7,18 @@ use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-use psg::PsgEngine;
+use psg::{DrumSampler, PsgEngine};
 use sequencer::{
-    AudioClock, Audition, Drum, Pattern, SequencerState, SharedState, TRACKS, new_shared_state,
+    AudioClock, Audition, Pattern, SequencerState, SharedState, TRACKS, new_shared_state,
 };
 
-fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
-    match drum {
-        Drum::Kick => engine.kick(),
-        Drum::Snare => engine.snare(),
-        Drum::ClosedHat => engine.hihat(false),
-        Drum::OpenHat => engine.hihat(true),
-    }
-}
-
-fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize, muted: [bool; TRACKS]) {
+fn trigger_step(
+    engine: &mut PsgEngine,
+    drums: &mut DrumSampler,
+    pattern: &Pattern,
+    step: usize,
+    muted: [bool; TRACKS],
+) {
     if !muted[0]
         && let Some(note) = pattern.melody[step]
     {
@@ -32,26 +29,23 @@ fn trigger_step(engine: &mut PsgEngine, pattern: &Pattern, step: usize, muted: [
     {
         engine.arpeggio(freq);
     }
-    // Drums take channel C if bass and drums start on the same step.
     if !muted[2]
         && let Some(freq) = pattern.bass[step]
     {
         engine.bass(freq);
     }
-    if !muted[3]
-        && let Some(drum) = pattern.drums[step]
-    {
-        trigger_drum(engine, drum);
+    if !muted[3] {
+        drums.trigger(pattern.drums[step]);
     }
 }
 
-fn trigger_audition(engine: &mut PsgEngine, request: Audition) {
+fn trigger_audition(engine: &mut PsgEngine, drums: &mut DrumSampler, request: Audition) {
     match request {
         Audition::Melody => engine.melody(440.0, sequencer::MelodyStyle::Sustain),
         Audition::Melody2 => engine.melody2(440.0),
         Audition::Arpeggio => engine.arpeggio(261.63),
         Audition::Bass => engine.bass(130.81),
-        Audition::Drum(drum) => trigger_drum(engine, drum),
+        Audition::Drum(drum) => drums.audition(drum),
     }
 }
 
@@ -123,6 +117,7 @@ where
 {
     let mut clock = AudioClock::new(config.sample_rate as f64);
     let mut engine = PsgEngine::new(config.sample_rate);
+    let mut drums = DrumSampler::new(config.sample_rate);
     let mut last_mutes = [false; TRACKS];
     let mut last_playing = false;
     let mut snapshot = shared.lock().unwrap().clone();
@@ -143,25 +138,30 @@ where
             // Stop playback tails, but let a paused audition start cleanly.
             if reset || (!playing && (last_playing || audition.is_some())) {
                 engine.reset();
+                drums.mute();
             }
 
             // Stop newly muted notes and muted previews when playback starts.
             for track in 0..TRACKS {
                 if muted[track] && (!last_mutes[track] || (playing && !last_playing)) {
-                    engine.mute(track);
+                    if track == 3 {
+                        drums.mute();
+                    } else {
+                        engine.mute(track);
+                    }
                 }
             }
             last_mutes = muted;
             last_playing = playing;
 
             if let Some(request) = audition {
-                trigger_audition(&mut engine, request);
+                trigger_audition(&mut engine, &mut drums, request);
             }
 
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        trigger_step(&mut engine, pattern, step, muted);
+                        trigger_step(&mut engine, &mut drums, pattern, step, muted);
                         pending_step = Some(step);
                     }
                 } else {
@@ -170,8 +170,9 @@ where
                     clock.step = 0;
                 }
 
-                let sample = if playing || engine.active() {
-                    engine.next_sample()
+                let sample = if playing || engine.active() || drums.active() {
+                    // Leave headroom for simultaneous bass, kit, and melodic voices.
+                    (engine.next_sample() + drums.next_sample()) * 0.75
                 } else {
                     0.0
                 };
@@ -196,6 +197,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sequencer::{Drum, DrumStep, Hat};
 
     fn check_samples<T>()
     where
@@ -255,7 +257,7 @@ mod tests {
             melody: [None; sequencer::STEPS],
             arpeggio: [None; sequencer::STEPS],
             bass: [None; sequencer::STEPS],
-            drums: [None; sequencer::STEPS],
+            drums: [DrumStep::default(); sequencer::STEPS],
             ..Pattern::default()
         };
 
@@ -280,12 +282,13 @@ mod tests {
                 }
                 2 => pattern.arpeggio[0] = Some(261.63),
                 3 => pattern.bass[0] = Some(130.81),
-                _ => pattern.drums[0] = Some(Drum::Snare),
+                _ => pattern.drums[0].snare = true,
             }
-            trigger_step(&mut engine, &pattern, 0, [false; TRACKS]);
-            assert!(engine.active());
+            let mut drums = DrumSampler::new(48_000);
+            trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS]);
+            assert!(engine.active() || drums.active());
             let peak = (0..4096)
-                .map(|_| engine.next_sample().abs())
+                .map(|_| (engine.next_sample() + drums.next_sample()).abs())
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01, "voice {voice} was silent");
 
@@ -297,13 +300,17 @@ mod tests {
                 _ => 3,
             }] = true;
             let mut silent = PsgEngine::new(48_000);
-            trigger_step(&mut silent, &pattern, 0, muted);
-            assert!(!silent.active(), "muted voice {voice} played");
+            let mut silent_drums = DrumSampler::new(48_000);
+            trigger_step(&mut silent, &mut silent_drums, &pattern, 0, muted);
+            assert!(
+                !silent.active() && !silent_drums.active(),
+                "muted voice {voice} played"
+            );
 
             pattern.melody[0] = None;
             pattern.arpeggio[0] = None;
             pattern.bass[0] = None;
-            pattern.drums[0] = None;
+            pattern.drums[0] = DrumStep::default();
         }
     }
 
@@ -313,38 +320,73 @@ mod tests {
             melody: [None; sequencer::STEPS],
             arpeggio: [None; sequencer::STEPS],
             bass: [None; sequencer::STEPS],
-            drums: [None; sequencer::STEPS],
+            drums: [DrumStep::default(); sequencer::STEPS],
             ..Pattern::default()
         };
-        pattern.drums[sequencer::STEPS - 1] = Some(Drum::Snare);
+        pattern.drums[sequencer::STEPS - 1].snare = true;
 
         let mut engine = PsgEngine::new(48_000);
-        trigger_step(&mut engine, &pattern, sequencer::STEPS - 1, [false; TRACKS]);
-        assert!(engine.active());
+        let mut drums = DrumSampler::new(48_000);
+        trigger_step(
+            &mut engine,
+            &mut drums,
+            &pattern,
+            sequencer::STEPS - 1,
+            [false; TRACKS],
+        );
+        assert!(drums.active());
     }
 
     #[test]
-    fn shared_channel_mutes_are_independent() {
+    fn overlapping_bass_and_drums_mute_independently() {
         let mut pattern = Pattern {
             melody: [None; sequencer::STEPS],
             arpeggio: [None; sequencer::STEPS],
             bass: [None; sequencer::STEPS],
-            drums: [None; sequencer::STEPS],
+            drums: [DrumStep::default(); sequencer::STEPS],
             ..Pattern::default()
         };
         pattern.bass[0] = Some(130.81);
-        pattern.drums[0] = Some(Drum::Snare);
+        pattern.drums[0].snare = true;
+        pattern.drums[0].hat = Some(Hat::Closed);
+
+        let mut engine = PsgEngine::new(48_000);
+        let mut drums = DrumSampler::new(48_000);
+        trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS]);
+        assert!(engine.active() && drums.active());
 
         for track in [2, 3] {
             let mut muted = [false; TRACKS];
             muted[track] = true;
             let mut engine = PsgEngine::new(48_000);
-            trigger_step(&mut engine, &pattern, 0, muted);
+            let mut drums = DrumSampler::new(48_000);
+            trigger_step(&mut engine, &mut drums, &pattern, 0, muted);
+            assert_eq!(engine.active(), track == 3);
+            assert_eq!(drums.active(), track == 2);
             let peak = (0..4096)
-                .map(|_| engine.next_sample().abs())
+                .map(|_| (engine.next_sample() + drums.next_sample()).abs())
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01, "muting track {track} silenced both voices");
         }
+    }
+
+    #[test]
+    fn layered_output_keeps_headroom() {
+        let mut engine = PsgEngine::new(48_000);
+        let mut drums = DrumSampler::new(48_000);
+        engine.melody(440.0, sequencer::MelodyStyle::Sustain);
+        engine.arpeggio(329.63);
+        engine.bass(130.81);
+        drums.trigger(DrumStep {
+            kick: true,
+            snare: true,
+            hat: Some(Hat::Closed),
+        });
+
+        let peak = (0..48_000)
+            .map(|_| ((engine.next_sample() + drums.next_sample()) * 0.75).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(peak < 1.0, "mixed peak: {peak}");
     }
 
     #[test]
@@ -360,19 +402,14 @@ mod tests {
             Audition::Drum(Drum::OpenHat),
         ] {
             let mut engine = PsgEngine::new(48_000);
-            trigger_audition(&mut engine, request);
-            assert!(engine.active());
+            let mut drums = DrumSampler::new(48_000);
+            trigger_audition(&mut engine, &mut drums, request);
+            assert!(engine.active() || drums.active());
             let peak = (0..48_000)
-                .map(|_| {
-                    if engine.active() {
-                        engine.next_sample().abs()
-                    } else {
-                        0.0
-                    }
-                })
+                .map(|_| (engine.next_sample() + drums.next_sample()).abs())
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01, "{request:?} was silent");
-            assert!(!engine.active());
+            assert!(!engine.active() && !drums.active());
         }
     }
 

@@ -48,7 +48,8 @@ impl AppState {
             .set_if_changed(s.pattern.arpeggio.iter().map(Option::is_some).collect());
         self.bass
             .set_if_changed(s.pattern.bass.iter().map(Option::is_some).collect());
-        self.drums.set_if_changed(s.pattern.drums.to_vec());
+        self.drums
+            .set_if_changed(s.pattern.drums.iter().map(|step| step.primary()).collect());
         self.playing.set_if_changed(s.playing);
         self.muted.set_if_changed(s.muted);
     }
@@ -214,7 +215,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 ),
                 Signal::new(s.pattern.arpeggio.iter().map(Option::is_some).collect()),
                 Signal::new(s.pattern.bass.iter().map(Option::is_some).collect()),
-                Signal::new(s.pattern.drums.to_vec()),
+                Signal::new(s.pattern.drums.iter().map(|step| step.primary()).collect()),
                 Signal::new(s.playing),
                 Signal::new(s.muted),
             )

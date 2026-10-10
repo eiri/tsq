@@ -34,6 +34,34 @@ pub enum Drum {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hat {
+    Closed,
+    Open,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrumStep {
+    pub kick: bool,
+    pub snare: bool,
+    pub hat: Option<Hat>,
+}
+
+impl DrumStep {
+    pub fn primary(self) -> Option<Drum> {
+        if self.kick {
+            Some(Drum::Kick)
+        } else if self.snare {
+            Some(Drum::Snare)
+        } else {
+            self.hat.map(|hat| match hat {
+                Hat::Closed => Drum::ClosedHat,
+                Hat::Open => Drum::OpenHat,
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audition {
     Melody,
     Melody2,
@@ -66,7 +94,7 @@ pub struct Pattern {
     pub(crate) arpeggio_shape: ArpShape,
     pub(crate) arpeggio_sevenths: [bool; STEPS / PAGE_STEPS],
     pub bass: [Option<f32>; STEPS],
-    pub drums: [Option<Drum>; STEPS],
+    pub drums: [DrumStep; STEPS],
     pub melody_style: MelodyStyle,
 }
 
@@ -301,33 +329,47 @@ fn set_arpeggios(pattern: &mut Pattern) {
     }
 }
 
-fn set_drums(pattern: &mut Pattern) {
-    // Choose one drum phrase around bass hits, then repeat its sounds on every page.
-    for step in 0..PAGE_STEPS {
-        pattern.drums[step] = if pattern.bass[step].is_some() {
-            None
-        } else {
-            match fastrand::u8(0..5) {
-                0 => Some(Drum::Kick),
-                1 => Some(Drum::Snare),
-                2 => Some(Drum::ClosedHat),
-                3 => Some(Drum::OpenHat),
-                _ => None,
-            }
+#[derive(Clone, Copy)]
+enum Groove {
+    Backbeat,
+    FourFloor,
+    HalfTime,
+    Syncopated,
+}
+
+fn groove_steps(groove: Groove) -> [DrumStep; PAGE_STEPS] {
+    std::array::from_fn(|step| {
+        let kick = match groove {
+            Groove::Backbeat => matches!(step, 0 | 4),
+            Groove::FourFloor => step % 2 == 0,
+            Groove::HalfTime => matches!(step, 0 | 5),
+            Groove::Syncopated => matches!(step, 0 | 3 | 4),
         };
-    }
+        let snare = match groove {
+            Groove::HalfTime => step == 4,
+            _ => matches!(step, 2 | 6),
+        };
+        let hat = if matches!(groove, Groove::FourFloor) && step % 2 == 0 {
+            None
+        } else if step == 7 && matches!(groove, Groove::HalfTime | Groove::Syncopated) {
+            Some(Hat::Open)
+        } else {
+            Some(Hat::Closed)
+        };
+        DrumStep { kick, snare, hat }
+    })
+}
 
-    // Keep the first drum hit a kick, even when every random choice was empty.
-    let first = (0..PAGE_STEPS)
-        .find(|&step| pattern.drums[step].is_some())
-        .or_else(|| (0..PAGE_STEPS).find(|&step| pattern.bass[step].is_none()));
-    if let Some(step) = first {
-        pattern.drums[step] = Some(Drum::Kick);
-    }
-
-    for step in PAGE_STEPS..STEPS {
-        pattern.drums[step] = pattern.drums[step % PAGE_STEPS];
-    }
+fn set_drums(pattern: &mut Pattern) {
+    // Pick one groove and repeat its anchors across all eight bars.
+    let groove = match fastrand::usize(0..4) {
+        0 => Groove::Backbeat,
+        1 => Groove::FourFloor,
+        2 => Groove::HalfTime,
+        _ => Groove::Syncopated,
+    };
+    let bar = groove_steps(groove);
+    pattern.drums = std::array::from_fn(|step| bar[step % PAGE_STEPS]);
 }
 
 fn set_bass(pattern: &mut Pattern) {
@@ -347,6 +389,7 @@ fn set_bass(pattern: &mut Pattern) {
 
 impl Default for Pattern {
     fn default() -> Self {
+        let bar = groove_steps(Groove::Backbeat);
         let mut pattern = Self {
             tonic: 0,
             mode: Mode::Major,
@@ -363,12 +406,7 @@ impl Default for Pattern {
             arpeggio_shape: ArpShape::Classic,
             arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
             bass: std::array::from_fn(|i| BASS_PATTERNS[2][i % PAGE_STEPS].then_some(0.0)),
-            drums: std::array::from_fn(|i| match i % PAGE_STEPS {
-                4 => Some(Drum::Kick),
-                5 => Some(Drum::Snare),
-                6 => Some(Drum::ClosedHat),
-                _ => None,
-            }),
+            drums: std::array::from_fn(|i| bar[i % PAGE_STEPS]),
             melody_style: MelodyStyle::Sustain,
         };
         set_arpeggios(&mut pattern);
@@ -472,7 +510,7 @@ pub fn random_pattern() -> Pattern {
             let step = i % PAGE_STEPS;
             (BASS_PATTERNS[rhythm][step] || (step == 5 && high)).then_some(0.0)
         }),
-        drums: [None; STEPS],
+        drums: [DrumStep::default(); STEPS],
         melody_style: if fastrand::bool() {
             MelodyStyle::Pluck
         } else {
@@ -533,16 +571,8 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                 if pattern.bass == old {
                     continue;
                 }
-
-                let old = pattern.drums;
-                while pattern.drums == old {
-                    set_drums(pattern);
-                }
             }
             3 => {
-                if pattern.bass.iter().all(Option::is_some) {
-                    return;
-                }
                 let old = pattern.drums;
                 set_drums(pattern);
                 if pattern.drums == old {
@@ -675,20 +705,22 @@ mod tests {
     }
 
     #[test]
-    fn default_pattern_keeps_drums_off_bass() {
+    fn default_pattern_has_backbeat_over_bass() {
         let p = Pattern::default();
-        assert_eq!(p.drums[0], None);
-        assert_eq!(p.drums[4], Some(Drum::Kick));
-        assert_eq!(p.drums[6], Some(Drum::ClosedHat));
-        assert_eq!(p.bass[0], p.arpeggio[0].map(|freq| freq / 4.0));
-        assert_eq!(p.bass[5], None);
-        assert_eq!(p.bass[7], None);
-    }
-
-    #[test]
-    fn default_pattern_snare_after_kick() {
-        let p = Pattern::default();
-        assert_eq!(p.drums[5], Some(Drum::Snare));
+        for page in 0..STEPS / PAGE_STEPS {
+            let start = page * PAGE_STEPS;
+            assert!(p.drums[start].kick && p.drums[start + 4].kick);
+            assert!(p.drums[start + 2].snare && p.drums[start + 6].snare);
+            assert!(
+                p.drums[start..start + PAGE_STEPS]
+                    .iter()
+                    .all(|step| step.hat == Some(Hat::Closed))
+            );
+        }
+        assert!(p.bass[0].is_some() && p.drums[0].kick);
+        assert_eq!(p.drums[0].primary(), Some(Drum::Kick));
+        assert_eq!(p.drums[2].primary(), Some(Drum::Snare));
+        assert_eq!(p.drums[1].primary(), Some(Drum::ClosedHat));
     }
 
     #[test]
@@ -761,11 +793,11 @@ mod tests {
         {
             let mut s = clone.lock().unwrap();
             s.bpm = 140.0;
-            s.pattern.drums[2] = Some(Drum::Kick);
+            s.pattern.drums[2].kick = true;
         }
         let s = state.lock().unwrap();
         assert_eq!(s.bpm, 140.0);
-        assert_eq!(s.pattern.drums[2], Some(Drum::Kick));
+        assert!(s.pattern.drums[2].kick);
     }
 
     #[test]
@@ -804,12 +836,11 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(pattern.drums == before.drums, track != 2 && track != 3);
+            assert_eq!(pattern.drums == before.drums, track != 3);
             for step in 0..STEPS {
-                assert!(pattern.bass[step].is_none() || pattern.drums[step].is_none());
                 assert_eq!(pattern.drums[step], pattern.drums[step % PAGE_STEPS]);
             }
-            assert_eq!(pattern.drums.iter().flatten().next(), Some(&Drum::Kick));
+            assert!(pattern.drums[0].kick);
             if track != 0 {
                 assert_eq!((pattern.tonic, pattern.mode), (before.tonic, before.mode));
             }
@@ -880,46 +911,46 @@ mod tests {
     }
 
     #[test]
-    fn drum_randomizer_changes_sounds_and_steps() {
+    fn drum_randomizer_uses_repeated_grooves() {
         let mut pattern = Pattern::default();
-        let mut sounds = [false; 4];
-        let mut empty = false;
-        let mut filled = false;
-
+        let mut seen = [false; 4];
         for _ in 0..100 {
+            let old = pattern.drums;
             random_track(&mut pattern, 3);
-            assert_eq!(pattern.drums.iter().flatten().next(), Some(&Drum::Kick));
-            for step in 0..STEPS {
-                assert!(pattern.bass[step].is_none() || pattern.drums[step].is_none());
-                assert_eq!(pattern.drums[step], pattern.drums[step % PAGE_STEPS]);
-                match pattern.drums[step] {
-                    Some(Drum::Kick) => sounds[0] = true,
-                    Some(Drum::Snare) => sounds[1] = true,
-                    Some(Drum::ClosedHat) => sounds[2] = true,
-                    Some(Drum::OpenHat) => sounds[3] = true,
-                    None if pattern.bass[step].is_none() => empty = true,
-                    None => {}
-                }
-                filled |= pattern.drums[step].is_some();
+            assert_ne!(pattern.drums, old);
+            let bar = &pattern.drums[..PAGE_STEPS];
+            assert!(bar[0].kick);
+            assert!([2, 4, 6].iter().any(|&step| bar[step].snare));
+            for page in 1..STEPS / PAGE_STEPS {
+                assert_eq!(
+                    &pattern.drums[page * PAGE_STEPS..(page + 1) * PAGE_STEPS],
+                    bar
+                );
+            }
+            for (index, groove) in [
+                Groove::Backbeat,
+                Groove::FourFloor,
+                Groove::HalfTime,
+                Groove::Syncopated,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                seen[index] |= bar == groove_steps(groove);
             }
         }
-        assert!(sounds.into_iter().all(|seen| seen));
-        assert!(empty && filled);
+        assert!(seen.into_iter().all(|found| found));
     }
 
     #[test]
-    fn bass_randomizer_regenerates_drums() {
+    fn bass_randomizer_keeps_drums() {
         let mut pattern = Pattern::default();
+        let drums = pattern.drums;
         for _ in 0..20 {
             let bass = pattern.bass;
-            let drums = pattern.drums;
             random_track(&mut pattern, 2);
             assert_ne!(pattern.bass, bass);
-            assert_ne!(pattern.drums, drums);
-            assert_eq!(pattern.drums.iter().flatten().next(), Some(&Drum::Kick));
-            for step in 0..STEPS {
-                assert!(pattern.bass[step].is_none() || pattern.drums[step].is_none());
-            }
+            assert_eq!(pattern.drums, drums);
         }
     }
 
@@ -1261,9 +1292,8 @@ mod tests {
         assert_eq!(p.melody.len(), STEPS);
         assert_eq!(p.arpeggio.len(), STEPS);
         assert_eq!(p.bass.len(), STEPS);
-        assert_eq!(p.drums.iter().flatten().next(), Some(&Drum::Kick));
+        assert!(p.drums[0].kick);
         for step in 0..STEPS {
-            assert!(p.bass[step].is_none() || p.drums[step].is_none());
             assert_eq!(p.drums[step], p.drums[step % PAGE_STEPS]);
         }
 

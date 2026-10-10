@@ -1,6 +1,6 @@
 use ym2149::{Ym2149, Ym2149Backend};
 
-use crate::sequencer::{Drum, MelodyStep, MelodyStyle, MelodyVoice};
+use crate::sequencer::{Drum, DrumStep, Hat, MelodyStep, MelodyStyle, MelodyVoice};
 
 const MASTER_CLOCK: u32 = 1_789_773;
 const PLAYER_HZ: u32 = 60;
@@ -64,6 +64,91 @@ impl Note {
             Voice::Snare => fade(8),
             Voice::ClosedHat | Voice::OpenHat => fade(10),
         }
+    }
+}
+
+pub struct DrumSampler {
+    samples: [Vec<f32>; 4],
+    cursors: [Option<usize>; 4],
+}
+
+impl DrumSampler {
+    pub fn new(sample_rate: u32) -> Self {
+        // Render each chip voice once so layered hits add little audio-thread work.
+        let samples = [Drum::Kick, Drum::Snare, Drum::ClosedHat, Drum::OpenHat].map(|drum| {
+            let mut engine = PsgEngine::new(sample_rate);
+            match drum {
+                Drum::Kick => engine.kick(),
+                Drum::Snare => engine.snare(),
+                Drum::ClosedHat => engine.hihat(false),
+                Drum::OpenHat => engine.hihat(true),
+            }
+            let mut output = Vec::new();
+            while engine.active() {
+                output.push(engine.next_sample());
+            }
+            output
+        });
+        Self {
+            samples,
+            cursors: [None; 4],
+        }
+    }
+
+    pub fn trigger(&mut self, step: DrumStep) {
+        if step.kick {
+            self.cursors[0] = Some(0);
+        }
+        if step.snare {
+            self.cursors[1] = Some(0);
+        }
+        if let Some(hat) = step.hat {
+            // Closed and open hats choke each other.
+            self.cursors[2] = None;
+            self.cursors[3] = None;
+            self.cursors[if hat == Hat::Open { 3 } else { 2 }] = Some(0);
+        }
+    }
+
+    pub fn audition(&mut self, drum: Drum) {
+        let step = match drum {
+            Drum::Kick => DrumStep {
+                kick: true,
+                ..DrumStep::default()
+            },
+            Drum::Snare => DrumStep {
+                snare: true,
+                ..DrumStep::default()
+            },
+            hat => DrumStep {
+                hat: Some(if hat == Drum::OpenHat {
+                    Hat::Open
+                } else {
+                    Hat::Closed
+                }),
+                ..DrumStep::default()
+            },
+        };
+        self.trigger(step);
+    }
+
+    pub fn mute(&mut self) {
+        self.cursors = [None; 4];
+    }
+
+    pub fn active(&self) -> bool {
+        self.cursors.iter().any(Option::is_some)
+    }
+
+    pub fn next_sample(&mut self) -> f32 {
+        let mut mix = 0.0;
+        for (cursor, samples) in self.cursors.iter_mut().zip(&self.samples) {
+            if let Some(position) = *cursor {
+                mix += samples[position];
+                *cursor = (position + 1 < samples.len()).then_some(position + 1);
+            }
+        }
+        mix
     }
 }
 
@@ -291,6 +376,43 @@ impl PsgEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_drums_match_solo_chip() {
+        for drum in [Drum::Kick, Drum::Snare, Drum::ClosedHat, Drum::OpenHat] {
+            let mut engine = PsgEngine::new(48_000);
+            let mut samples = DrumSampler::new(48_000);
+            match drum {
+                Drum::Kick => engine.kick(),
+                Drum::Snare => engine.snare(),
+                Drum::ClosedHat => engine.hihat(false),
+                Drum::OpenHat => engine.hihat(true),
+            }
+            samples.audition(drum);
+            while engine.active() {
+                assert_eq!(samples.next_sample(), engine.next_sample());
+            }
+            assert!(!samples.active());
+        }
+    }
+
+    #[test]
+    fn layered_drums_choke_hats_and_mute() {
+        let mut samples = DrumSampler::new(48_000);
+        samples.trigger(DrumStep {
+            kick: true,
+            snare: true,
+            hat: Some(Hat::Open),
+        });
+        assert_eq!(samples.cursors, [Some(0), Some(0), None, Some(0)]);
+        samples.next_sample();
+        samples.audition(Drum::ClosedHat);
+        assert!(samples.cursors[0].is_some() && samples.cursors[1].is_some());
+        assert!(samples.cursors[2].is_some() && samples.cursors[3].is_none());
+        samples.mute();
+        assert!(!samples.active());
+        assert_eq!(samples.next_sample(), 0.0);
+    }
 
     #[test]
     fn idle_chip_is_silent() {
