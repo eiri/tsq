@@ -195,6 +195,73 @@ impl Default for Pattern {
     }
 }
 
+fn random_melody(tonic: u8, mode: Mode, rng: &mut fastrand::Rng) -> [Option<MelodyStep>; STEPS] {
+    let notes = scale(tonic, mode);
+    let voice = if rng.bool() {
+        MelodyVoice::M1
+    } else {
+        MelodyVoice::M2
+    };
+
+    // Reuse one rhythm and a nearby-note walk across the eight measures.
+    let mut hits = [false; PAGE_STEPS];
+    hits[0] = true;
+    hits[PAGE_STEPS - 1] = true;
+    let count = rng.usize(4..7);
+    while hits.iter().filter(|&&hit| hit).count() < count {
+        hits[rng.usize(1..PAGE_STEPS - 1)] = true;
+    }
+    let penultimate = (1..PAGE_STEPS - 1).rev().find(|&i| hits[i]).unwrap();
+    let mut degrees = [0usize; PAGE_STEPS];
+    let mut pitch = rng.usize(0..3);
+    for i in 0..PAGE_STEPS {
+        if !hits[i] {
+            continue;
+        }
+        pitch = if i == penultimate {
+            pitch.clamp(1, 2)
+        } else if i == PAGE_STEPS - 1 {
+            2
+        } else if i == 0 {
+            pitch
+        } else {
+            let movement = match rng.usize(0..10) {
+                0 => 2,
+                1..=4 => 1,
+                5..=8 => -1,
+                _ => -2,
+            };
+            (pitch as i32 + movement).clamp(0, 3) as usize
+        };
+        degrees[i] = pitch;
+    }
+
+    let mut melody = [None; STEPS];
+    for page in 0..STEPS / PAGE_STEPS {
+        for i in 0..PAGE_STEPS {
+            if !hits[i] {
+                continue;
+            }
+            let mut degree = degrees[i];
+            if page % 4 == 2 && i == penultimate {
+                degree = if degree == 1 { 2 } else { 1 };
+            }
+            if i == PAGE_STEPS - 1 {
+                degree = match page {
+                    3 => 1,
+                    7 => 0,
+                    _ => degree,
+                };
+            }
+            melody[page * PAGE_STEPS + i] = Some(MelodyStep {
+                freq: notes[degree],
+                voice,
+            });
+        }
+    }
+    melody
+}
+
 pub fn random_pattern() -> Pattern {
     let tonic = fastrand::u8(0..12);
     let mode = if fastrand::bool() {
@@ -202,23 +269,14 @@ pub fn random_pattern() -> Pattern {
     } else {
         Mode::Minor
     };
-    let notes = scale(tonic, mode);
+    let melody = random_melody(tonic, mode, &mut fastrand::Rng::new());
     let rhythm = fastrand::usize(0..BASS_PATTERNS.len());
     let high = fastrand::bool();
 
     let mut pattern = Pattern {
         tonic,
         mode,
-        melody: std::array::from_fn(|i| {
-            fastrand::bool().then(|| MelodyStep {
-                freq: notes[i % PAGE_STEPS],
-                voice: if fastrand::bool() {
-                    MelodyVoice::M1
-                } else {
-                    MelodyVoice::M2
-                },
-            })
-        }),
+        melody,
         arpeggio: [None; STEPS],
         arpeggio_roots: std::array::from_fn(|_| fastrand::u8(0..7)),
         bass: std::array::from_fn(|i| {
@@ -243,17 +301,13 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
     loop {
         let next = random_pattern();
         match track {
-            0 if pattern.melody != next.melody
-                || pattern.melody_style != next.melody_style
-                || pattern.tonic != next.tonic
-                || pattern.mode != next.mode =>
-            {
-                pattern.tonic = next.tonic;
-                pattern.mode = next.mode;
-                pattern.melody = next.melody;
+            0 => {
+                let melody = random_melody(pattern.tonic, pattern.mode, &mut fastrand::Rng::new());
+                if melody == pattern.melody && next.melody_style == pattern.melody_style {
+                    continue;
+                }
+                pattern.melody = melody;
                 pattern.melody_style = next.melody_style;
-                set_arpeggios(pattern);
-                set_bass(pattern);
             }
             1 => {
                 let old = pattern.arpeggio;
@@ -287,7 +341,6 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                     continue;
                 }
             }
-            0..=3 => continue,
             _ => return,
         }
         return;
@@ -699,6 +752,53 @@ mod tests {
                         assert_eq!(pattern.bass[start + step], expected);
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn melody_repeats_with_small_changes() {
+        for seed in 0..100 {
+            let melody = random_melody(0, Mode::Minor, &mut fastrand::Rng::with_seed(seed));
+            let notes = scale(0, Mode::Minor);
+            let bar = &melody[..PAGE_STEPS];
+            assert!((4..=6).contains(&bar.iter().flatten().count()));
+
+            // Every measure keeps the same pauses; only the planned notes change.
+            for page in 1..8 {
+                let start = page * PAGE_STEPS;
+                assert_eq!(
+                    std::array::from_fn::<_, PAGE_STEPS, _>(|i| melody[start + i].is_some()),
+                    std::array::from_fn(|i| bar[i].is_some())
+                );
+            }
+            assert_eq!(&melody[PAGE_STEPS..2 * PAGE_STEPS], bar);
+            assert_eq!(&melody[4 * PAGE_STEPS..5 * PAGE_STEPS], bar);
+            assert_eq!(&melody[5 * PAGE_STEPS..6 * PAGE_STEPS], bar);
+
+            for page in [2, 3, 6, 7] {
+                let differences = (0..PAGE_STEPS)
+                    .filter(|&i| melody[page * PAGE_STEPS + i] != bar[i])
+                    .count();
+                assert_eq!(differences, 1);
+            }
+            assert_eq!(melody[STEPS - 1].unwrap().freq, notes[0]);
+            let first = notes
+                .iter()
+                .position(|&n| n == bar[0].unwrap().freq)
+                .unwrap();
+            assert!(first <= 2);
+
+            for note in melody.iter().flatten() {
+                assert!(notes[..4].contains(&note.freq));
+            }
+            for page in 0..8 {
+                let pitches: Vec<_> = melody[page * PAGE_STEPS..(page + 1) * PAGE_STEPS]
+                    .iter()
+                    .flatten()
+                    .map(|n| notes.iter().position(|&freq| freq == n.freq).unwrap())
+                    .collect();
+                assert!(pitches.windows(2).all(|w| w[0].abs_diff(w[1]) <= 2));
             }
         }
     }
