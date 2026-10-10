@@ -99,6 +99,117 @@ fn chord_at(tonic: u8, mode: Mode, root: u8) -> [f32; 3] {
     })
 }
 
+fn pitch_class(freq: f32) -> i32 {
+    ((69.0 + 12.0 * (freq / 440.0).log2()).round() as i32).rem_euclid(12)
+}
+
+fn chord_classes(tonic: u8, mode: Mode, root: u8) -> [i32; 3] {
+    chord_at(tonic, mode, root).map(pitch_class)
+}
+
+fn page_score(pattern: &Pattern, page: usize, root: u8) -> i32 {
+    let chord = chord_classes(pattern.tonic, pattern.mode, root);
+    let start = page * PAGE_STEPS;
+    let mut score = 0;
+
+    // Anchor the harmony to prominent notes; short notes may decorate the chord.
+    for step in 0..PAGE_STEPS {
+        let Some(note) = pattern.melody[start + step] else {
+            continue;
+        };
+        let weight = if step == 0 {
+            6
+        } else if step == 7 {
+            4
+        } else {
+            2
+        };
+        let weight = if note.short { weight.min(2) } else { weight };
+        let pitch = pitch_class(note.freq);
+        if chord.contains(&pitch) {
+            score += weight;
+        } else {
+            let previous = (0..step).rev().find_map(|i| pattern.melody[start + i]);
+            let next = (step + 1..PAGE_STEPS).find_map(|i| pattern.melody[start + i]);
+            let passing = previous.zip(next).is_some_and(|(a, b)| {
+                let a = pitch_class(a.freq);
+                let b = pitch_class(b.freq);
+                chord.contains(&a)
+                    && chord.contains(&b)
+                    && (a - pitch).rem_euclid(12).min((pitch - a).rem_euclid(12)) <= 2
+                    && (b - pitch).rem_euclid(12).min((pitch - b).rem_euclid(12)) <= 2
+            });
+            score -= if passing && step != 0 { 1 } else { weight };
+        }
+    }
+
+    // Prefer stable chords, especially at the beginning and end of the loop.
+    if root == 6 {
+        score -= 5;
+    }
+    if page == 0 && root == 0 {
+        score += 10;
+    }
+    if page == STEPS / PAGE_STEPS - 1 && root == 0 {
+        score += 24;
+    }
+    score
+}
+
+fn transition(from: u8, to: u8) -> i32 {
+    match (from, to) {
+        (4, 0) | (1, 4) | (3, 4) | (0, 3) => 5,
+        (a, b) if a == b => 1,
+        (6, _) | (_, 6) => -3,
+        _ => 0,
+    }
+}
+
+fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAGE_STEPS] {
+    const PAGES: usize = STEPS / PAGE_STEPS;
+    let variety: [[i32; 7]; PAGES] =
+        std::array::from_fn(|_| std::array::from_fn(|_| rng.i32(0..4)));
+    let mut best = [0; PAGES];
+    let mut best_score = i32::MIN;
+
+    // Fix each possible first chord, then find the best path including the loop boundary.
+    for first in 0..7 {
+        let mut scores = [[i32::MIN; 7]; PAGES];
+        let mut parents = [[0u8; 7]; PAGES];
+        scores[0][first] = page_score(pattern, 0, first as u8) + variety[0][first];
+        for page in 1..PAGES {
+            for root in 0..7 {
+                for previous in 0..7 {
+                    if scores[page - 1][previous] == i32::MIN {
+                        continue;
+                    }
+                    let score = scores[page - 1][previous]
+                        + transition(previous as u8, root as u8)
+                        + page_score(pattern, page, root as u8)
+                        + variety[page][root];
+                    if score > scores[page][root] {
+                        scores[page][root] = score;
+                        parents[page][root] = previous as u8;
+                    }
+                }
+            }
+        }
+
+        for (last, &path_score) in scores[PAGES - 1].iter().enumerate() {
+            let score = path_score + transition(last as u8, first as u8);
+            if score > best_score {
+                best_score = score;
+                let mut root = last as u8;
+                for page in (0..PAGES).rev() {
+                    best[page] = root;
+                    root = parents[page][root as usize];
+                }
+            }
+        }
+    }
+    best
+}
+
 fn set_arpeggios(pattern: &mut Pattern) {
     for page in 0..STEPS / PAGE_STEPS {
         let chord = match pattern.arpeggio_roots[page] {
@@ -287,7 +398,7 @@ pub fn random_pattern() -> Pattern {
         mode,
         melody,
         arpeggio: [None; STEPS],
-        arpeggio_roots: std::array::from_fn(|_| fastrand::u8(0..7)),
+        arpeggio_roots: [0; STEPS / PAGE_STEPS],
         bass: std::array::from_fn(|i| {
             let step = i % PAGE_STEPS;
             (BASS_PATTERNS[rhythm][step] || (step == 5 && high)).then_some(0.0)
@@ -299,6 +410,7 @@ pub fn random_pattern() -> Pattern {
             MelodyStyle::Sustain
         },
     };
+    pattern.arpeggio_roots = harmony_roots(&pattern, &mut fastrand::Rng::new());
     set_arpeggios(&mut pattern);
     set_bass(&mut pattern);
     set_drums(&mut pattern);
@@ -694,6 +806,48 @@ mod tests {
                 [notes[5], notes[0] * 2.0, notes[2] * 2.0]
             );
         }
+    }
+
+    #[test]
+    fn harmony_follows_prominent_notes_and_resolves() {
+        let mut pattern = Pattern {
+            melody: [None; STEPS],
+            ..Pattern::default()
+        };
+        let notes = scale(0, Mode::Major);
+        for (page, degrees) in [(0, [0, 2, 4]), (6, [1, 3, 5]), (7, [0, 2, 4])] {
+            for (step, degree) in [0, 3, 7].into_iter().zip(degrees) {
+                pattern.melody[page * PAGE_STEPS + step] = Some(MelodyStep {
+                    freq: notes[degree],
+                    voice: MelodyVoice::M1,
+                    short: false,
+                    bend: false,
+                });
+            }
+        }
+
+        let roots = harmony_roots(&pattern, &mut fastrand::Rng::with_seed(1));
+        assert_eq!(roots[0], 0);
+        assert_eq!(roots[6], 1);
+        assert_eq!(roots[7], 0);
+    }
+
+    #[test]
+    fn passing_notes_need_no_new_chord() {
+        let mut pattern = Pattern {
+            melody: [None; STEPS],
+            ..Pattern::default()
+        };
+        let notes = scale(0, Mode::Major);
+        for (step, degree) in [(0, 0), (2, 1), (4, 2)] {
+            pattern.melody[step] = Some(MelodyStep {
+                freq: notes[degree],
+                voice: MelodyVoice::M1,
+                short: step == 2,
+                bend: false,
+            });
+        }
+        assert!(page_score(&pattern, 0, 0) > page_score(&pattern, 0, 1));
     }
 
     #[test]
