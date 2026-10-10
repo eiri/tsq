@@ -903,6 +903,28 @@ mod tests {
     }
 
     #[test]
+    fn generated_harmony_ends_on_tonic() {
+        for tonic in 0..12 {
+            for mode in [Mode::Major, Mode::Minor] {
+                for seed in 0..8 {
+                    let mut pattern = Pattern {
+                        tonic,
+                        mode,
+                        melody: random_melody(tonic, mode, &mut fastrand::Rng::with_seed(seed)),
+                        ..Pattern::default()
+                    };
+                    pattern.arpeggio_roots =
+                        harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seed + 100));
+                    assert_eq!(pattern.arpeggio_roots[7], 0, "{tonic} {mode:?} {seed}");
+                    set_arpeggios(&mut pattern);
+                    set_bass(&mut pattern);
+                    assert_eq!(pattern.bass[56], pattern.arpeggio[56].map(|f| f / 4.0));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn passing_notes_need_no_new_chord() {
         let mut pattern = Pattern {
             melody: [None; STEPS],
