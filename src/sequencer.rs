@@ -210,6 +210,29 @@ fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAG
     best
 }
 
+fn alternate_roots(pattern: &Pattern, roots: &mut [u8; STEPS / PAGE_STEPS]) {
+    let mut best = (i32::MIN, 0, 0);
+    for page in 0..roots.len() {
+        let previous = roots[(page + roots.len() - 1) % roots.len()];
+        let next = roots[(page + 1) % roots.len()];
+        for root in 0..7 {
+            if root == roots[page] {
+                continue;
+            }
+            let score = page_score(pattern, page, root)
+                + transition(previous, root)
+                + transition(root, next)
+                - page_score(pattern, page, roots[page])
+                - transition(previous, roots[page])
+                - transition(roots[page], next);
+            if score > best.0 {
+                best = (score, page, root);
+            }
+        }
+    }
+    roots[best.1] = best.2;
+}
+
 fn set_arpeggios(pattern: &mut Pattern) {
     for page in 0..STEPS / PAGE_STEPS {
         let chord = match pattern.arpeggio_roots[page] {
@@ -429,15 +452,19 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
                 }
                 pattern.melody = melody;
                 pattern.melody_style = next.melody_style;
-            }
-            1 => {
-                let old = pattern.arpeggio;
-                pattern.arpeggio_roots = next.arpeggio_roots;
+                pattern.arpeggio_roots = harmony_roots(pattern, &mut fastrand::Rng::new());
                 set_arpeggios(pattern);
                 set_bass(pattern);
-                if pattern.arpeggio == old {
-                    continue;
+            }
+            1 => {
+                let old = pattern.arpeggio_roots;
+                let mut roots = harmony_roots(pattern, &mut fastrand::Rng::new());
+                if roots == old {
+                    alternate_roots(pattern, &mut roots);
                 }
+                pattern.arpeggio_roots = roots;
+                set_arpeggios(pattern);
+                set_bass(pattern);
             }
             2 => {
                 let old = pattern.bass;
@@ -726,9 +753,9 @@ mod tests {
             if track != 0 {
                 assert_eq!((pattern.tonic, pattern.mode), (before.tonic, before.mode));
             }
-            if track != 1 {
+            if track >= 2 {
                 assert_eq!(pattern.arpeggio_roots, before.arpeggio_roots);
-            } else {
+            } else if track == 1 {
                 assert_ne!(pattern.arpeggio_roots, before.arpeggio_roots);
             }
             if track <= 2 {
@@ -739,6 +766,49 @@ mod tests {
                     assert_eq!(pattern.arpeggio, expected.arpeggio);
                 }
                 assert_eq!(pattern.bass, expected.bass);
+            }
+        }
+    }
+
+    #[test]
+    fn melody_reroll_updates_harmony_and_bass() {
+        let mut pattern = Pattern::default();
+        let old_melody = pattern.melody;
+        let old_drums = pattern.drums;
+        let old_rhythm = pattern.bass.map(|note| note.is_some());
+        random_track(&mut pattern, 0);
+
+        assert_ne!(pattern.melody, old_melody);
+        assert_eq!(pattern.drums, old_drums);
+        assert_eq!(pattern.bass.map(|note| note.is_some()), old_rhythm);
+        assert!(pattern.arpeggio_roots.iter().all(|&root| root < 7));
+        for page in 0..STEPS / PAGE_STEPS {
+            let start = page * PAGE_STEPS;
+            let chord = chord_at(pattern.tonic, pattern.mode, pattern.arpeggio_roots[page]);
+            assert_eq!(pattern.arpeggio[start], Some(chord[0]));
+            assert_eq!(pattern.bass[start], Some(chord[0] / 4.0));
+        }
+    }
+
+    #[test]
+    fn arpeggio_reroll_keeps_melody_and_changes_chords() {
+        let mut pattern = random_pattern();
+        let melody = pattern.melody;
+        let rhythm = pattern.bass.map(|note| note.is_some());
+        let drums = pattern.drums;
+        for _ in 0..20 {
+            let old = pattern.arpeggio_roots;
+            random_track(&mut pattern, 1);
+            assert_ne!(pattern.arpeggio_roots, old);
+            assert_eq!(pattern.melody, melody);
+            assert_eq!(pattern.drums, drums);
+            assert_eq!(pattern.bass.map(|note| note.is_some()), rhythm);
+            for page in 0..STEPS / PAGE_STEPS {
+                let start = page * PAGE_STEPS;
+                assert_eq!(
+                    pattern.bass[start],
+                    pattern.arpeggio[start].map(|f| f / 4.0)
+                );
             }
         }
     }
