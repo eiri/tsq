@@ -63,7 +63,7 @@ pub struct Pattern {
     pub melody: [Option<MelodyStep>; STEPS],
     pub arpeggio: [Option<f32>; STEPS],
     pub(crate) arpeggio_roots: [u8; STEPS / PAGE_STEPS],
-    pub(crate) arpeggio_shapes: [ArpShape; STEPS / PAGE_STEPS],
+    pub(crate) arpeggio_shape: ArpShape,
     pub(crate) arpeggio_sevenths: [bool; STEPS / PAGE_STEPS],
     pub bass: [Option<f32>; STEPS],
     pub drums: [Option<Drum>; STEPS],
@@ -266,30 +266,31 @@ fn arp_notes(chord: [f32; 4], shape: ArpShape, seventh: bool) -> [f32; 6] {
     positions.map(|(note, octave)| chord[note] * 2.0_f32.powi(octave))
 }
 
-fn random_arp_shapes(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
-    for page in 0..STEPS / PAGE_STEPS {
-        let shape = match rng.usize(0..4) {
-            0 => ArpShape::Classic,
-            1 => ArpShape::Up,
-            2 => ArpShape::Down,
-            _ => ArpShape::Repeat,
-        };
-        pattern.arpeggio_shapes[page] = shape;
-        // Add sevenths to moving chords, especially a dominant before tonic.
+fn random_arp_shape(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
+    pattern.arpeggio_shape = match rng.usize(0..4) {
+        0 => ArpShape::Classic,
+        1 => ArpShape::Up,
+        2 => ArpShape::Down,
+        _ => ArpShape::Repeat,
+    };
+
+    // Add sevenths to moving chords, especially a dominant before tonic.
+    for page in 0..STEPS / PAGE_STEPS - 1 {
         let root = pattern.arpeggio_roots[page];
-        pattern.arpeggio_sevenths[page] = matches!(shape, ArpShape::Up | ArpShape::Down)
-            && page + 1 < STEPS / PAGE_STEPS
-            && root != 6
-            && root != pattern.arpeggio_roots[page + 1]
-            && (root == 4 && pattern.arpeggio_roots[page + 1] == 0 || rng.usize(0..4) == 0);
+        pattern.arpeggio_sevenths[page] =
+            matches!(pattern.arpeggio_shape, ArpShape::Up | ArpShape::Down)
+                && root != 6
+                && root != pattern.arpeggio_roots[page + 1]
+                && (root == 4 && pattern.arpeggio_roots[page + 1] == 0 || rng.usize(0..4) == 0);
     }
+    pattern.arpeggio_sevenths[STEPS / PAGE_STEPS - 1] = false;
 }
 
 fn set_arpeggios(pattern: &mut Pattern) {
     for page in 0..STEPS / PAGE_STEPS {
         let notes = arp_notes(
             page_chord(pattern, page),
-            pattern.arpeggio_shapes[page],
+            pattern.arpeggio_shape,
             pattern.arpeggio_sevenths[page],
         );
         let start = page * PAGE_STEPS;
@@ -359,7 +360,7 @@ impl Default for Pattern {
             }),
             arpeggio: [None; STEPS],
             arpeggio_roots: DEFAULT_ROOTS,
-            arpeggio_shapes: [ArpShape::Classic; STEPS / PAGE_STEPS],
+            arpeggio_shape: ArpShape::Classic,
             arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
             bass: std::array::from_fn(|i| BASS_PATTERNS[2][i % PAGE_STEPS].then_some(0.0)),
             drums: std::array::from_fn(|i| match i % PAGE_STEPS {
@@ -465,7 +466,7 @@ pub fn random_pattern() -> Pattern {
         melody,
         arpeggio: [None; STEPS],
         arpeggio_roots: [0; STEPS / PAGE_STEPS],
-        arpeggio_shapes: [ArpShape::Classic; STEPS / PAGE_STEPS],
+        arpeggio_shape: ArpShape::Classic,
         arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
         bass: std::array::from_fn(|i| {
             let step = i % PAGE_STEPS;
@@ -479,7 +480,7 @@ pub fn random_pattern() -> Pattern {
         },
     };
     pattern.arpeggio_roots = harmony_roots(&pattern, &mut fastrand::Rng::new());
-    random_arp_shapes(&mut pattern, &mut fastrand::Rng::new());
+    random_arp_shape(&mut pattern, &mut fastrand::Rng::new());
     set_arpeggios(&mut pattern);
     set_bass(&mut pattern);
     set_drums(&mut pattern);
@@ -512,15 +513,15 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
             1 => {
                 let old = pattern.arpeggio;
                 pattern.arpeggio_roots = harmony_roots(pattern, &mut fastrand::Rng::new());
-                random_arp_shapes(pattern, &mut fastrand::Rng::new());
+                random_arp_shape(pattern, &mut fastrand::Rng::new());
                 set_arpeggios(pattern);
                 if pattern.arpeggio == old {
-                    pattern.arpeggio_shapes[0] = if pattern.arpeggio_shapes[0] == ArpShape::Up {
+                    pattern.arpeggio_shape = if pattern.arpeggio_shape == ArpShape::Up {
                         ArpShape::Down
                     } else {
                         ArpShape::Up
                     };
-                    pattern.arpeggio_sevenths[0] = false;
+                    pattern.arpeggio_sevenths.fill(false);
                     set_arpeggios(pattern);
                 }
                 set_bass(pattern);
@@ -818,7 +819,7 @@ mod tests {
                 assert_ne!(pattern.arpeggio, before.arpeggio);
             }
             if track != 1 {
-                assert_eq!(pattern.arpeggio_shapes, before.arpeggio_shapes);
+                assert_eq!(pattern.arpeggio_shape, before.arpeggio_shape);
             }
             if track >= 2 {
                 assert_eq!(pattern.arpeggio_sevenths, before.arpeggio_sevenths);
@@ -1045,15 +1046,15 @@ mod tests {
         };
         let mut seen = [false; 5];
         for seed in 0..100 {
-            random_arp_shapes(&mut pattern, &mut fastrand::Rng::with_seed(seed));
+            random_arp_shape(&mut pattern, &mut fastrand::Rng::with_seed(seed));
+            let shape = pattern.arpeggio_shape;
+            seen[match shape {
+                ArpShape::Classic => 0,
+                ArpShape::Up => 1,
+                ArpShape::Down => 2,
+                ArpShape::Repeat => 3,
+            }] = true;
             for page in 0..STEPS / PAGE_STEPS {
-                let shape = pattern.arpeggio_shapes[page];
-                seen[match shape {
-                    ArpShape::Classic => 0,
-                    ArpShape::Up => 1,
-                    ArpShape::Down => 2,
-                    ArpShape::Repeat => 3,
-                }] = true;
                 seen[4] |= pattern.arpeggio_sevenths[page];
                 assert!(
                     !pattern.arpeggio_sevenths[page]
@@ -1063,6 +1064,34 @@ mod tests {
             assert!(!pattern.arpeggio_sevenths[7]);
         }
         assert!(seen.into_iter().all(|value| value));
+    }
+
+    #[test]
+    fn arpeggio_shape_applies_to_every_page() {
+        for shape in [
+            ArpShape::Classic,
+            ArpShape::Up,
+            ArpShape::Down,
+            ArpShape::Repeat,
+        ] {
+            let mut pattern = Pattern {
+                arpeggio_shape: shape,
+                arpeggio_roots: [0, 1, 2, 3, 4, 5, 6, 0],
+                ..Pattern::default()
+            };
+            set_arpeggios(&mut pattern);
+            for page in 0..STEPS / PAGE_STEPS {
+                let start = page * PAGE_STEPS;
+                assert_eq!(
+                    pattern.arpeggio[start..start + 6],
+                    arp_notes(page_chord(&pattern, page), shape, false).map(Some)
+                );
+                assert_eq!(
+                    pattern.arpeggio[start + 6..start + PAGE_STEPS],
+                    [None, None]
+                );
+            }
+        }
     }
 
     #[test]
@@ -1124,8 +1153,10 @@ mod tests {
 
     #[test]
     fn descending_arpeggio_keeps_bass_on_root() {
-        let mut pattern = Pattern::default();
-        pattern.arpeggio_shapes[0] = ArpShape::Down;
+        let mut pattern = Pattern {
+            arpeggio_shape: ArpShape::Down,
+            ..Pattern::default()
+        };
         pattern.arpeggio_sevenths[0] = true;
         set_arpeggios(&mut pattern);
         set_bass(&mut pattern);
@@ -1258,7 +1289,7 @@ mod tests {
                 p.arpeggio[step],
                 arp_notes(
                     page_chord(&p, page),
-                    p.arpeggio_shapes[page],
+                    p.arpeggio_shape,
                     p.arpeggio_sevenths[page],
                 )
                 .get(step % PAGE_STEPS)
@@ -1266,7 +1297,7 @@ mod tests {
             );
             assert!(
                 !p.arpeggio_sevenths[page]
-                    || matches!(p.arpeggio_shapes[page], ArpShape::Up | ArpShape::Down)
+                    || matches!(p.arpeggio_shape, ArpShape::Up | ArpShape::Down)
             );
             if p.arpeggio_sevenths[page] {
                 assert!(page < STEPS / PAGE_STEPS - 1);
