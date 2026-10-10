@@ -87,10 +87,10 @@ impl Model for AppState {
                 self.sync_from_shared();
             }
             AppEvent::Randomize => {
-                {
-                    let mut s = self.shared.lock().unwrap();
-                    random_track(&mut s.pattern, self.selected_track.get());
-                }
+                // Generate outside the shared lock so audio can keep playing.
+                let mut pattern = self.shared.lock().unwrap().pattern.clone();
+                random_track(&mut pattern, self.selected_track.get());
+                self.shared.lock().unwrap().pattern = pattern;
                 self.sync_from_shared();
             }
             AppEvent::NextTrack => {

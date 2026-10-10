@@ -8,7 +8,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
 use psg::PsgEngine;
-use sequencer::{AudioClock, Audition, Drum, Pattern, SharedState, TRACKS, new_shared_state};
+use sequencer::{
+    AudioClock, Audition, Drum, Pattern, SequencerState, SharedState, TRACKS, new_shared_state,
+};
 
 fn trigger_drum(engine: &mut PsgEngine, drum: Drum) {
     match drum {
@@ -84,6 +86,33 @@ fn build_audio_stream(shared: SharedState) -> Result<cpal::Stream> {
     }
 }
 
+fn poll_state(
+    shared: &SharedState,
+    snapshot: &mut SequencerState,
+    pending_step: &mut Option<usize>,
+) -> (bool, Option<Audition>) {
+    // Never wait for the UI on the audio thread. Keep the last snapshot if busy.
+    let Ok(mut state) = shared.try_lock() else {
+        return (false, None);
+    };
+    if let Some(step) = pending_step.take() {
+        state.current_step = step;
+    }
+    let reset = std::mem::take(&mut state.reset);
+    let audition = state.audition.take();
+    *snapshot = state.clone();
+    (reset, audition)
+}
+
+fn publish_step(shared: &SharedState, pending_step: &mut Option<usize>) {
+    if let Some(step) = *pending_step
+        && let Ok(mut state) = shared.try_lock()
+    {
+        state.current_step = step;
+        *pending_step = None;
+    }
+}
+
 fn output_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -96,23 +125,21 @@ where
     let mut engine = PsgEngine::new(config.sample_rate);
     let mut last_mutes = [false; TRACKS];
     let mut last_playing = false;
+    let mut snapshot = shared.lock().unwrap().clone();
+    let mut pending_step = None;
     let channels = config.channels as usize;
 
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            let (bpm, pattern, playing, reset, audition, muted) = {
-                let mut s = shared.lock().unwrap();
-                let reset = std::mem::take(&mut s.reset);
-                (
-                    s.bpm,
-                    s.pattern.clone(),
-                    s.playing,
-                    reset,
-                    s.audition.take(),
-                    s.muted,
-                )
-            };
+            let (reset, audition) = poll_state(&shared, &mut snapshot, &mut pending_step);
+            let SequencerState {
+                bpm,
+                ref pattern,
+                playing,
+                muted,
+                ..
+            } = snapshot;
             // Stop playback tails, but let a paused audition start cleanly.
             if reset || (!playing && (last_playing || audition.is_some())) {
                 engine.reset();
@@ -134,9 +161,8 @@ where
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        trigger_step(&mut engine, &pattern, step, muted);
-                        let mut s = shared.lock().unwrap();
-                        s.current_step = step;
+                        trigger_step(&mut engine, pattern, step, muted);
+                        pending_step = Some(step);
                     }
                 } else {
                     // Reset clock position so playback always restarts from step 0.
@@ -151,6 +177,7 @@ where
                 };
                 write_frame(frame, sample);
             }
+            publish_step(&shared, &mut pending_step);
         },
         |err| eprintln!("audio error: {err}"),
         None,
@@ -187,6 +214,39 @@ mod tests {
 
         write_frame(&mut frame, 0.0);
         assert_eq!(frame, [T::EQUILIBRIUM; 2]);
+    }
+
+    #[test]
+    fn audio_keeps_snapshot_while_state_is_busy() {
+        let shared = new_shared_state();
+        let mut snapshot = shared.lock().unwrap().clone();
+        let mut pending_step = Some(7);
+        let mut state = shared.lock().unwrap();
+        state.playing = true;
+        state.reset = true;
+        state.audition = Some(Audition::Bass);
+
+        assert_eq!(
+            poll_state(&shared, &mut snapshot, &mut pending_step),
+            (false, None)
+        );
+        publish_step(&shared, &mut pending_step);
+        assert!(!snapshot.playing);
+        assert_eq!(pending_step, Some(7));
+        assert_eq!(state.current_step, 0);
+        drop(state);
+
+        assert_eq!(
+            poll_state(&shared, &mut snapshot, &mut pending_step),
+            (true, Some(Audition::Bass))
+        );
+        assert!(snapshot.playing);
+        assert_eq!(snapshot.current_step, 7);
+        assert_eq!(pending_step, None);
+        assert_eq!(
+            poll_state(&shared, &mut snapshot, &mut pending_step),
+            (false, None)
+        );
     }
 
     #[test]
