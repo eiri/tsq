@@ -1,6 +1,6 @@
 use ym2149::{Ym2149, Ym2149Backend};
 
-use crate::sequencer::{Drum, MelodyStyle};
+use crate::sequencer::{Drum, DrumStep, Hat, MelodyStep, MelodyStyle, MelodyVoice};
 
 const MASTER_CLOCK: u32 = 1_789_773;
 const PLAYER_HZ: u32 = 60;
@@ -30,6 +30,7 @@ struct Note {
     age: u32,
     length: u32,
     freq: f32,
+    bend: bool,
 }
 
 impl Note {
@@ -39,6 +40,7 @@ impl Note {
             age: 0,
             length,
             freq,
+            bend: false,
         };
     }
 
@@ -65,6 +67,91 @@ impl Note {
     }
 }
 
+pub struct DrumSampler {
+    samples: [Vec<f32>; 4],
+    cursors: [Option<usize>; 4],
+}
+
+impl DrumSampler {
+    pub fn new(sample_rate: u32) -> Self {
+        // Render each chip voice once so layered hits add little audio-thread work.
+        let samples = [Drum::Kick, Drum::Snare, Drum::ClosedHat, Drum::OpenHat].map(|drum| {
+            let mut engine = PsgEngine::new(sample_rate);
+            match drum {
+                Drum::Kick => engine.kick(),
+                Drum::Snare => engine.snare(),
+                Drum::ClosedHat => engine.hihat(false),
+                Drum::OpenHat => engine.hihat(true),
+            }
+            let mut output = Vec::new();
+            while engine.active() {
+                output.push(engine.next_sample());
+            }
+            output
+        });
+        Self {
+            samples,
+            cursors: [None; 4],
+        }
+    }
+
+    pub fn trigger(&mut self, step: DrumStep) {
+        if step.kick {
+            self.cursors[0] = Some(0);
+        }
+        if step.snare {
+            self.cursors[1] = Some(0);
+        }
+        if let Some(hat) = step.hat {
+            // Closed and open hats choke each other.
+            self.cursors[2] = None;
+            self.cursors[3] = None;
+            self.cursors[if hat == Hat::Open { 3 } else { 2 }] = Some(0);
+        }
+    }
+
+    pub fn audition(&mut self, drum: Drum) {
+        let step = match drum {
+            Drum::Kick => DrumStep {
+                kick: true,
+                ..DrumStep::default()
+            },
+            Drum::Snare => DrumStep {
+                snare: true,
+                ..DrumStep::default()
+            },
+            hat => DrumStep {
+                hat: Some(if hat == Drum::OpenHat {
+                    Hat::Open
+                } else {
+                    Hat::Closed
+                }),
+                ..DrumStep::default()
+            },
+        };
+        self.trigger(step);
+    }
+
+    pub fn mute(&mut self) {
+        self.cursors = [None; 4];
+    }
+
+    pub fn active(&self) -> bool {
+        self.cursors.iter().any(Option::is_some)
+    }
+
+    pub fn next_sample(&mut self) -> f32 {
+        let mut mix = 0.0;
+        for (cursor, samples) in self.cursors.iter_mut().zip(&self.samples) {
+            if let Some(position) = *cursor {
+                mix += samples[position];
+                *cursor = (position + 1 < samples.len()).then_some(position + 1);
+            }
+        }
+        mix
+    }
+}
+
 pub struct PsgEngine {
     chip: Ym2149,
     mixer: u8,
@@ -73,7 +160,6 @@ pub struct PsgEngine {
     sample_rate: u32,
     tick_phase: u32,
     tick_pending: bool,
-    arp_notes: [f32; 3],
 }
 
 impl PsgEngine {
@@ -86,7 +172,6 @@ impl PsgEngine {
             sample_rate,
             tick_phase: 0,
             tick_pending: true,
-            arp_notes: [0.0; 3],
         };
         engine.configure();
         engine
@@ -98,7 +183,6 @@ impl PsgEngine {
         self.drum = None;
         self.tick_phase = 0;
         self.tick_pending = true;
-        self.arp_notes = [0.0; 3];
         self.configure();
     }
 
@@ -174,9 +258,20 @@ impl PsgEngine {
         self.start(MELODY, Voice::Melody2, 36, freq);
     }
 
-    pub fn arpeggio(&mut self, notes: [f32; 3]) {
-        self.arp_notes = notes;
-        self.start(ARPEGGIO, Voice::Arpeggio, 30, notes[0]);
+    pub fn melody_step(&mut self, note: MelodyStep, style: MelodyStyle) {
+        match note.voice {
+            MelodyVoice::M1 => self.melody(note.freq, style),
+            MelodyVoice::M2 => self.melody2(note.freq),
+        }
+        // A short gate ends before the next eighth-note step at 120 BPM.
+        if note.short {
+            self.notes[MELODY].length = 8;
+        }
+        self.notes[MELODY].bend = note.bend;
+    }
+
+    pub fn arpeggio(&mut self, freq: f32) {
+        self.start(ARPEGGIO, Voice::Arpeggio, 12, freq);
     }
 
     pub fn bass(&mut self, freq: f32) {
@@ -186,7 +281,8 @@ impl PsgEngine {
         }
         self.drum = None;
         self.set_mixer(0x38);
-        self.start(BASS, Voice::Bass, 27, freq);
+        // End each bass hit before the next sequencer step at 120 BPM.
+        self.start(BASS, Voice::Bass, 8, freq);
     }
 
     pub fn mute(&mut self, track: usize) {
@@ -225,10 +321,14 @@ impl PsgEngine {
             }
 
             let pitch = match note.voice {
-                Voice::Arpeggio => self.arp_notes[(note.age / 3) as usize % 3],
                 Voice::Kick => 55.0 + 100.0 * (5 - note.age.min(5)) as f32 / 5.0,
                 Voice::Snare => 180.0,
                 Voice::ClosedHat | Voice::OpenHat => 0.0,
+                _ if note.bend => {
+                    // Rise by a quarter-tone over four 60 Hz ticks.
+                    let fraction = (4 - note.age.min(4)) as f32 / 4.0;
+                    note.freq * 2.0_f32.powf(-fraction / 48.0)
+                }
                 _ => note.freq,
             };
             if pitch > 0.0 {
@@ -276,6 +376,43 @@ impl PsgEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampled_drums_match_solo_chip() {
+        for drum in [Drum::Kick, Drum::Snare, Drum::ClosedHat, Drum::OpenHat] {
+            let mut engine = PsgEngine::new(48_000);
+            let mut samples = DrumSampler::new(48_000);
+            match drum {
+                Drum::Kick => engine.kick(),
+                Drum::Snare => engine.snare(),
+                Drum::ClosedHat => engine.hihat(false),
+                Drum::OpenHat => engine.hihat(true),
+            }
+            samples.audition(drum);
+            while engine.active() {
+                assert_eq!(samples.next_sample(), engine.next_sample());
+            }
+            assert!(!samples.active());
+        }
+    }
+
+    #[test]
+    fn layered_drums_choke_hats_and_mute() {
+        let mut samples = DrumSampler::new(48_000);
+        samples.trigger(DrumStep {
+            kick: true,
+            snare: true,
+            hat: Some(Hat::Open),
+        });
+        assert_eq!(samples.cursors, [Some(0), Some(0), None, Some(0)]);
+        samples.next_sample();
+        samples.audition(Drum::ClosedHat);
+        assert!(samples.cursors[0].is_some() && samples.cursors[1].is_some());
+        assert!(samples.cursors[2].is_some() && samples.cursors[3].is_none());
+        samples.mute();
+        assert!(!samples.active());
+        assert_eq!(samples.next_sample(), 0.0);
+    }
 
     #[test]
     fn idle_chip_is_silent() {
@@ -329,9 +466,9 @@ mod tests {
     }
 
     #[test]
-    fn arp_cycles_and_bass_borrows() {
+    fn arp_and_bass_borrow() {
         let mut engine = PsgEngine::new(48_000);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.bass(130.81);
         engine.next_sample();
         assert!(engine.chip.read_register(9) > 0);
@@ -339,11 +476,29 @@ mod tests {
         for _ in 1..2401 {
             engine.next_sample();
         }
-        assert_eq!(engine.chip.read_register(2), 83);
-        assert_eq!(engine.chip.read_register(3), 1);
+        let period = (MASTER_CLOCK as f32 / (16.0 * 261.63)).round() as u16;
+        assert_eq!(engine.chip.read_register(2), period as u8);
+        assert_eq!(engine.chip.read_register(3), (period >> 8) as u8);
         engine.kick();
         engine.bass(196.0);
         assert_eq!(engine.drum, Some(Drum::Kick));
+    }
+
+    #[test]
+    fn arpeggio_holds_one_pitch() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.arpeggio(261.63);
+        engine.tick();
+        let pitch = engine.chip.read_register(2);
+        for _ in 1..12 {
+            engine.tick();
+            assert_eq!(engine.chip.read_register(2), pitch);
+        }
+        assert_eq!(engine.chip.read_register(9), 0);
+
+        engine.arpeggio(329.63);
+        engine.tick();
+        assert_ne!(engine.chip.read_register(2), pitch);
     }
 
     #[test]
@@ -358,6 +513,29 @@ mod tests {
         }
         assert!(!engine.active());
         assert_eq!(engine.chip.read_register(10), 0);
+    }
+
+    #[test]
+    fn bass_hits_have_a_gap() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.bass(130.81);
+
+        // A step lasts 15 player ticks at 120 BPM.
+        for tick in 0..15 {
+            engine.tick();
+            if tick < 7 {
+                assert!(engine.notes[BASS].active());
+                assert!(engine.chip.read_register(10) > 0);
+            } else {
+                assert!(!engine.notes[BASS].active());
+                assert_eq!(engine.chip.read_register(10), 0);
+            }
+        }
+
+        engine.bass(130.81);
+        engine.tick();
+        assert!(engine.notes[BASS].active());
+        assert_eq!(engine.chip.read_register(10), 9);
     }
 
     #[test]
@@ -395,10 +573,57 @@ mod tests {
     }
 
     #[test]
+    fn melody_step_cuts_and_bends() {
+        for voice in [MelodyVoice::M1, MelodyVoice::M2] {
+            let mut engine = PsgEngine::new(48_000);
+            engine.melody_step(
+                MelodyStep {
+                    freq: 440.0,
+                    voice,
+                    short: true,
+                    bend: true,
+                },
+                MelodyStyle::Sustain,
+            );
+            engine.tick();
+            let period = |engine: &PsgEngine| {
+                u16::from(engine.chip.read_register(0))
+                    | (u16::from(engine.chip.read_register(1)) << 8)
+            };
+            let first = period(&engine);
+            for _ in 1..5 {
+                engine.tick();
+            }
+            let settled = period(&engine);
+            assert!(first > settled);
+            assert_eq!(settled, 254);
+            for _ in 5..8 {
+                engine.tick();
+            }
+            assert!(!engine.active());
+            assert_eq!(engine.chip.read_register(8), 0);
+
+            // Ordinary notes still use the voice's full length and fixed pitch.
+            engine.melody_step(
+                MelodyStep {
+                    freq: 440.0,
+                    voice,
+                    short: false,
+                    bend: false,
+                },
+                MelodyStyle::Sustain,
+            );
+            engine.tick();
+            assert_eq!(period(&engine), settled);
+            assert_eq!(engine.notes[MELODY].length, 36);
+        }
+    }
+
+    #[test]
     fn mute_keeps_other_channels() {
         let mut engine = PsgEngine::new(48_000);
         engine.melody(440.0, MelodyStyle::Sustain);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.bass(130.81);
         engine.mute(0);
         assert!(!engine.notes[MELODY].active());
@@ -461,7 +686,7 @@ mod tests {
     #[test]
     fn registers_hold_between_ticks() {
         let mut engine = PsgEngine::new(48_000);
-        engine.arpeggio([261.63, 329.63, 392.0]);
+        engine.arpeggio(261.63);
         engine.next_sample();
         let initial_pitch = engine.chip.read_register(2);
         let initial_level = engine.chip.read_register(9);
@@ -479,7 +704,7 @@ mod tests {
         }
         assert_eq!(engine.chip.read_register(2), initial_pitch);
         engine.next_sample();
-        assert_eq!(engine.chip.read_register(2), 83);
+        assert_eq!(engine.chip.read_register(2), initial_pitch);
     }
 
     #[test]

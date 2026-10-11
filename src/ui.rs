@@ -48,7 +48,8 @@ impl AppState {
             .set_if_changed(s.pattern.arpeggio.iter().map(Option::is_some).collect());
         self.bass
             .set_if_changed(s.pattern.bass.iter().map(Option::is_some).collect());
-        self.drums.set_if_changed(s.pattern.drums.to_vec());
+        self.drums
+            .set_if_changed(s.pattern.drums.iter().map(|step| step.primary()).collect());
         self.playing.set_if_changed(s.playing);
         self.muted.set_if_changed(s.muted);
     }
@@ -87,10 +88,10 @@ impl Model for AppState {
                 self.sync_from_shared();
             }
             AppEvent::Randomize => {
-                {
-                    let mut s = self.shared.lock().unwrap();
-                    random_track(&mut s.pattern, self.selected_track.get());
-                }
+                // Generate outside the shared lock so audio can keep playing.
+                let mut pattern = self.shared.lock().unwrap().pattern.clone();
+                random_track(&mut pattern, self.selected_track.get());
+                self.shared.lock().unwrap().pattern = pattern;
                 self.sync_from_shared();
             }
             AppEvent::NextTrack => {
@@ -214,7 +215,7 @@ pub fn run(shared: SharedState) -> Result<(), ApplicationError> {
                 ),
                 Signal::new(s.pattern.arpeggio.iter().map(Option::is_some).collect()),
                 Signal::new(s.pattern.bass.iter().map(Option::is_some).collect()),
-                Signal::new(s.pattern.drums.to_vec()),
+                Signal::new(s.pattern.drums.iter().map(|step| step.primary()).collect()),
                 Signal::new(s.playing),
                 Signal::new(s.muted),
             )
@@ -492,6 +493,8 @@ mod tests {
             s.pattern.melody[4] = Some(crate::sequencer::MelodyStep {
                 freq: 392.0,
                 voice: crate::sequencer::MelodyVoice::M2,
+                short: false,
+                bend: false,
             });
             s.playing = true;
         }
