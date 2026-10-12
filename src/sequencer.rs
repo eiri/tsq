@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 use crate::arrange::{HarmonyPlan, legacy_root, render_arpeggio};
 use crate::music::MelodyInfo;
 pub use crate::music::ToneStep;
-use crate::music::{ARP_GATE, BASS_GATE, PLUCK_GATE, SHORT_GATE, SUSTAIN_GATE, freq_pitch};
+use crate::music::{ARP_GATE, BASS_GATE, SUSTAIN_GATE, freq_pitch};
+#[cfg(test)]
+use crate::music::{PLUCK_GATE, SHORT_GATE};
 
 pub const STEPS: usize = 64;
 pub const PAGE_STEPS: usize = 8;
@@ -344,6 +346,7 @@ impl Default for Pattern {
     }
 }
 
+#[cfg(test)]
 fn random_melody(
     tonic: u8,
     mode: Mode,
@@ -427,25 +430,6 @@ fn random_melody(
     melody
 }
 
-fn set_melody_gates(melody: &mut [Option<MelodyStep>; STEPS], style: MelodyStyle) {
-    // Preserve the legacy pluck gate without tying it to the playback tempo.
-    if style == MelodyStyle::Pluck {
-        for note in melody.iter_mut().flatten() {
-            if note.voice == MelodyVoice::M1 && note.duration == SUSTAIN_GATE {
-                note.duration = PLUCK_GATE;
-            }
-        }
-    }
-}
-
-fn random_style(rng: &mut fastrand::Rng) -> MelodyStyle {
-    if rng.bool() {
-        MelodyStyle::Pluck
-    } else {
-        MelodyStyle::Sustain
-    }
-}
-
 fn random_bass(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
     // Choose only the bass rhythm; pitches come from the current harmony.
     let rhythm = rng.usize(0..BASS_PATTERNS.len());
@@ -474,9 +458,7 @@ pub fn seeded_pattern(seed: u64) -> Pattern {
         Mode::Minor
     };
     let mut melody_rng = fastrand::Rng::with_seed(seeds.melody);
-    let mut melody = random_melody(tonic, mode, MelodyStyle::Sustain, &mut melody_rng);
-    let style = random_style(&mut melody_rng);
-    set_melody_gates(&mut melody, style);
+    let (melody, style) = crate::melody::generate(tonic, mode, &mut melody_rng);
 
     // Isolate stage draws so changes in accompaniment cannot change the lead.
     let mut pattern = Pattern {
@@ -516,10 +498,8 @@ pub fn seeded_track(pattern: &mut Pattern, track: usize, seed: u64) {
         let mut rng = fastrand::Rng::with_seed(seed);
         match track {
             0 => {
-                let mut melody =
-                    random_melody(pattern.tonic, pattern.mode, MelodyStyle::Sustain, &mut rng);
-                let style = random_style(&mut rng);
-                set_melody_gates(&mut melody, style);
+                let (melody, style) =
+                    crate::melody::generate(pattern.tonic, pattern.mode, &mut rng);
                 if melody == pattern.melody && style == pattern.melody_style {
                     continue;
                 }
@@ -705,14 +685,8 @@ mod tests {
 
         // Rebuild unrelated stages after extra arpeggio draws.
         let mut melody = fastrand::Rng::with_seed(original.seeds.melody);
-        altered.melody = random_melody(
-            altered.tonic,
-            altered.mode,
-            MelodyStyle::Sustain,
-            &mut melody,
-        );
-        altered.melody_style = random_style(&mut melody);
-        set_melody_gates(&mut altered.melody, altered.melody_style);
+        (altered.melody, altered.melody_style) =
+            crate::melody::generate(altered.tonic, altered.mode, &mut melody);
         set_drums(
             &mut altered,
             &mut fastrand::Rng::with_seed(original.seeds.groove),
@@ -752,7 +726,14 @@ mod tests {
             ),
         ];
         for (seed, tonic, pitches, bass_mask, _baseline_roots, groove) in fixtures {
-            let p = seeded_pattern(seed);
+            let mut p = seeded_pattern(seed);
+            // Keep the old melody fixture separate from the new phrase generator.
+            p.melody = random_melody(
+                p.tonic,
+                p.mode,
+                MelodyStyle::Sustain,
+                &mut fastrand::Rng::with_seed(p.seeds.melody),
+            );
             assert_eq!(p.tonic, tonic, "seed {seed}");
             assert_eq!(p.mode, Mode::Major, "seed {seed}");
             assert_eq!(&p.drums[..PAGE_STEPS], &groove_steps(groove), "seed {seed}");
@@ -1398,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn melody_repeats_with_small_changes() {
+    fn baseline_melody_fixture() {
         for seed in 0..100 {
             let melody = random_melody(
                 0,
