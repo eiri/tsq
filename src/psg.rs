@@ -208,12 +208,16 @@ impl PsgEngine {
     }
 
     fn start(&mut self, channel: usize, voice: Voice, ticks: u32, freq: f32) {
+        // Settle elapsed time before starting a fresh envelope.
+        self.flush_tick();
         self.notes[channel].start(voice, ticks, freq);
-        // Refresh registers without aging any other channel on a retrigger.
         self.refresh();
     }
 
     fn drum(&mut self, kind: Drum) {
+        // Settle the old owner's gate before checking or changing ownership.
+        self.flush_tick();
+
         // Drums can interrupt lower-priority hits, but never the reverse.
         let priority = |drum| match drum {
             Drum::Kick => 3,
@@ -296,6 +300,9 @@ impl PsgEngine {
     }
 
     pub fn bass(&mut self, freq: f32) {
+        // Release expired drums before checking channel ownership.
+        self.flush_tick();
+
         // A drum owns channel C until it finishes.
         if self.drum.is_some() && self.notes[BASS].active() {
             return;
@@ -369,11 +376,14 @@ impl PsgEngine {
         }
     }
 
-    pub fn next_sample(&mut self) -> f32 {
-        if self.tick_pending {
+    fn flush_tick(&mut self) {
+        if std::mem::take(&mut self.tick_pending) {
             self.tick();
-            self.tick_pending = false;
         }
+    }
+
+    pub fn next_sample(&mut self) -> f32 {
+        self.flush_tick();
 
         self.chip.clock();
         let sample = self.chip.get_sample();
@@ -398,6 +408,91 @@ impl PsgEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_gate_on_pending_tick() {
+        for track in 0..3 {
+            let mut engine = PsgEngine::new(48_000);
+            for _ in 0..12_000 {
+                engine.next_sample();
+            }
+            assert!(engine.tick_pending);
+
+            if track == MELODY {
+                engine.melody_step(
+                    MelodyStep {
+                        pitch: 69,
+                        duration: 1,
+                        voice: MelodyVoice::M1,
+                        bend: false,
+                    },
+                    MelodyStyle::Sustain,
+                    120.0,
+                );
+            } else {
+                engine.tone_step(track, ToneStep::new(69, 1), 120.0);
+            }
+
+            let mut peak = 0.0_f32;
+            for _ in 0..800 {
+                peak = peak.max(engine.next_sample().abs());
+                assert_eq!(engine.notes[track].age, 0);
+                assert!(engine.notes[track].active());
+                assert!(engine.chip.read_register(8 + track as u8) > 0);
+            }
+            // A one-tick bass release uses the chip's lowest volume level.
+            if track != BASS {
+                assert!(peak > 0.01);
+            }
+
+            engine.next_sample();
+            assert!(!engine.notes[track].active());
+        }
+    }
+
+    #[test]
+    fn pending_tick_ages_once() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.melody2(440.0);
+        for _ in 0..800 {
+            engine.next_sample();
+        }
+        assert!(engine.tick_pending);
+        assert_eq!(engine.notes[MELODY].age, 0);
+
+        engine.tone_step(1, ToneStep::new(60, 48), 120.0);
+        engine.tone_step(2, ToneStep::new(36, 32), 120.0);
+        engine.next_sample();
+        assert_eq!(engine.notes[MELODY].age, 1);
+        assert_eq!(engine.notes[ARPEGGIO].age, 0);
+        assert_eq!(engine.notes[BASS].age, 0);
+    }
+
+    #[test]
+    fn pending_tick_releases_owner() {
+        let mut engine = PsgEngine::new(48_000);
+        engine.bass(130.81);
+        for _ in 0..6_400 {
+            engine.next_sample();
+        }
+        engine.snare();
+        engine.next_sample();
+        assert_eq!(engine.drum, Some(Drum::Snare));
+        assert_eq!(engine.notes[BASS].age, 0);
+        assert_eq!(engine.mixer, 0x98);
+
+        engine.reset();
+        engine.hihat(false);
+        for _ in 0..4_000 {
+            engine.next_sample();
+        }
+        engine.bass(130.81);
+        engine.next_sample();
+        assert_eq!(engine.drum, None);
+        assert!(engine.notes[BASS].voice == Voice::Bass);
+        assert_eq!(engine.notes[BASS].age, 0);
+        assert_eq!(engine.mixer, 0xb8);
+    }
 
     #[test]
     fn gate_survives_retriggers() {
