@@ -1,5 +1,5 @@
 //! Harmony is shared by every pitched supporting track.
-use crate::music::{ARP_GATE, ToneStep};
+use crate::music::{ARP_GATE, BASS_GATE, ToneStep};
 use crate::music::{BAR_UNITS, BARS, Interval, LOOP_UNITS, MelodyInfo, STEP_UNITS, beat_weight};
 use crate::sequencer::{
     ArpShape, DrumStep, Groove, Hat, MelodyStep, Mode, Pattern, STEPS, groove_steps,
@@ -162,6 +162,10 @@ fn resolves(info: &MelodyInfo, interval: &Interval, bar: usize, chord: Chord) ->
     let bar_start = bar as u16 * BAR_UNITS;
     let carried = interval.start < bar_start || (interval.start == 0 && interval.attack > 0);
     let suspension = carried
+        && info
+            .intervals
+            .iter()
+            .any(|i| i.attack == note.attack && i.end % LOOP_UNITS == after.start)
         && classes.contains(&(after.pitch % 12))
         && (1..=2).contains(&next_delta.abs())
         && (after.start + LOOP_UNITS - bar_start) % LOOP_UNITS <= RESOLUTION_UNITS;
@@ -209,6 +213,28 @@ pub fn melody_score(info: &MelodyInfo, bar: usize, chord: Chord) -> i32 {
         score -= WEIGHTS.diminished;
     }
     score
+}
+
+#[cfg(test)]
+pub fn unresolved_units(info: &MelodyInfo, bar: usize, chord: Chord) -> u32 {
+    // Count unresolved sounding time without treating decorations as correctness failures.
+    let start = bar as u16 * BAR_UNITS;
+    info.intervals
+        .iter()
+        .filter(|i| !chord.classes().contains(&(i.pitch % 12)) && !resolves(info, i, bar, chord))
+        .map(|i| {
+            (0..8)
+                .map(|step| {
+                    let left = start + step * STEP_UNITS;
+                    u32::from(
+                        i.end
+                            .min(left + STEP_UNITS)
+                            .saturating_sub(i.start.max(left)),
+                    ) * beat_weight(step as usize) as u32
+                })
+                .sum::<u32>()
+        })
+        .sum()
 }
 
 pub fn candidates(info: &MelodyInfo, tonic: u8, mode: Mode) -> Vec<Chord> {
@@ -342,6 +368,9 @@ pub const ARP_LOW: u8 = 48;
 pub const ARP_HIGH: u8 = 79;
 const PLACEMENTS: usize = 6;
 const PLACEMENT_MARGIN: i32 = 12;
+const EMPTY_ARP_STEPS: [usize; 3] = [0, 3, 6];
+const ARP_MIN_ATTACKS: usize = 2;
+const ARP_MAX_ATTACKS: usize = 6;
 
 fn arp_line(placement: [u8; 3], shape: ArpShape) -> [u8; 6] {
     let [a, b, c] = placement;
@@ -382,12 +411,16 @@ fn placements(chord: Chord, info: &MelodyInfo, bar: usize) -> Vec<[u8; 3]> {
 
 fn arp_mask(info: &MelodyInfo, bar: usize, rng: &mut fastrand::Rng) -> Vec<usize> {
     let summary = info.bars[bar];
+    // Keep silent passages sparse and stable rather than maximizing accompaniment.
+    if summary.attacks == 0 && summary.coverage == 0 {
+        return EMPTY_ARP_STEPS.to_vec();
+    }
     let target = if summary.attacks >= 5 {
-        2
+        ARP_MIN_ATTACKS
     } else if summary.attacks >= 3 {
-        rng.usize(3..5)
+        rng.usize(ARP_MIN_ATTACKS + 1..ARP_MAX_ATTACKS - 1)
     } else {
-        rng.usize(4..7)
+        rng.usize(ARP_MIN_ATTACKS + 2..=ARP_MAX_ATTACKS)
     };
     let mut steps: Vec<_> = (0..8).collect();
     let jitter: [u8; 8] = std::array::from_fn(|_| rng.u8(0..3));
@@ -412,6 +445,22 @@ fn clash(info: &MelodyInfo, pitch: u8, units: u16) -> bool {
     })
 }
 
+fn rendered_arp(
+    info: &MelodyInfo,
+    bar: usize,
+    pitches: [u8; 3],
+    mask: &[usize],
+    shape: ArpShape,
+) -> Vec<(usize, u8)> {
+    let line = arp_line(pitches, shape);
+    mask.iter()
+        .enumerate()
+        .filter_map(|(i, &step)| {
+            (!clash(info, line[i], (bar * 8 + step) as u16 * STEP_UNITS)).then_some((step, line[i]))
+        })
+        .collect()
+}
+
 fn placement_cost(
     info: &MelodyInfo,
     bar: usize,
@@ -432,18 +481,31 @@ fn placement_cost(
         }
         cost += i32::from(pitch.saturating_sub(top));
     }
-    cost
+    // Score the surviving line, not notes removed by conflict avoidance.
+    let rendered = rendered_arp(info, bar, pitches, mask, shape);
+    cost + rendered
+        .windows(2)
+        .map(|w| i32::from(w[0].1.abs_diff(w[1].1)))
+        .sum::<i32>()
 }
 
-fn arp_movement(from: [u8; 3], to: [u8; 3], from_mask: &[usize], shape: ArpShape) -> i32 {
+fn arp_movement(
+    from: [u8; 3],
+    to: [u8; 3],
+    from_line: &[(usize, u8)],
+    to_line: &[(usize, u8)],
+) -> i32 {
     let placement: i32 = from
         .iter()
         .zip(to)
         .map(|(&a, b)| i32::from(a.abs_diff(b)))
         .sum();
-    let a = arp_line(from, shape);
-    let b = arp_line(to, shape);
-    placement + i32::from(a[from_mask.len() - 1].abs_diff(b[0])) * 2
+    // Removed clash notes must not become imaginary boundary endpoints.
+    placement
+        + from_line
+            .last()
+            .zip(to_line.first())
+            .map_or(0, |(a, b)| i32::from(a.1.abs_diff(b.1)) * 2)
 }
 
 pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand::Rng) {
@@ -462,6 +524,14 @@ pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastr
             options[b]
                 .iter()
                 .map(|&p| placement_cost(info, b, p, &masks[b], shape))
+                .collect()
+        })
+        .collect();
+    let lines: Vec<Vec<_>> = (0..BARS)
+        .map(|b| {
+            options[b]
+                .iter()
+                .map(|&p| rendered_arp(info, b, p, &masks[b], shape))
                 .collect()
         })
         .collect();
@@ -485,8 +555,8 @@ pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastr
                         - arp_movement(
                             options[bar - 1][from],
                             options[bar][to],
-                            &masks[bar - 1],
-                            shape,
+                            &lines[bar - 1][from],
+                            &lines[bar][to],
                         );
                     if state.as_ref().is_none_or(|p: &Path| score > p.score) {
                         let mut slots = previous.slots.clone();
@@ -502,8 +572,8 @@ pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastr
                 path.score -= arp_movement(
                     options[BARS - 1][last],
                     options[0][first],
-                    &masks[BARS - 1],
-                    shape,
+                    &lines[BARS - 1][last],
+                    &lines[0][first],
                 );
                 paths.push(path);
             }
@@ -515,19 +585,14 @@ pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastr
     let chosen = &paths[rng.usize(0..paths.len())];
     pattern.arpeggio = [None; STEPS];
     for bar in 0..BARS {
-        let line = arp_line(options[bar][chosen.slots[bar]], shape);
-        for (i, &step) in masks[bar].iter().enumerate() {
-            let units = (bar * 8 + step) as u16 * STEP_UNITS;
-            if !clash(info, line[i], units) {
-                pattern.arpeggio[bar * 8 + step] = Some(ToneStep::new(line[i], ARP_GATE));
-            }
+        for &(step, pitch) in &lines[bar][chosen.slots[bar]] {
+            pattern.arpeggio[bar * 8 + step] = Some(ToneStep::new(pitch, ARP_GATE));
         }
     }
 }
 
 pub const BASS_LOW: u8 = 28;
 pub const BASS_HIGH: u8 = 55;
-const BASS_GATE: u16 = 32;
 const APPROACH_GATE: u16 = 30;
 
 struct GroovePlan {
@@ -901,8 +966,9 @@ mod tests {
                 .chunks(8)
                 .all(|b| b.iter().flatten().count() <= 2)
         );
-        let smooth = arp_movement([48, 52, 55], [48, 52, 55], &[0, 2, 4, 6], ArpShape::Classic);
-        let jumpy = arp_movement([48, 52, 55], [72, 76, 79], &[0, 2, 4, 6], ArpShape::Classic);
+        let smooth = arp_movement([48, 52, 55], [48, 52, 55], &[(6, 55)], &[(0, 48)]);
+        let jumpy = arp_movement([48, 52, 55], [72, 76, 79], &[(6, 55)], &[(0, 72)]);
+        assert_eq!(arp_movement([48, 52, 55], [48, 52, 55], &[], &[(0, 48)]), 0);
         assert!(smooth < jumpy);
         assert!(placements(degree_chord(0, Mode::Major, 0), &info, 0).len() <= PLACEMENTS);
     }
@@ -935,6 +1001,13 @@ mod tests {
         let held = info(&[(0, 67, 120), (6, 65, 180), (9, 64, 180)]);
         let carry = held.intervals.iter().find(|i| i.attack == 6).unwrap();
         assert!(resolves(&held, carry, 1, c));
+        let gap = info(&[(0, 67, 120), (6, 65, 150), (9, 64, 180)]);
+        assert!(!resolves(
+            &gap,
+            gap.intervals.iter().find(|i| i.attack == 6).unwrap(),
+            1,
+            c
+        ));
         let octave = info(&[(0, 60, 120), (2, 74, 60), (3, 64, 180)]);
         assert!(!resolves(&octave, &octave.intervals[1], 0, c));
     }
@@ -965,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn tiny_search_matches_exhaustive() {
+    fn search_matches_exhaustive() {
         let choices = [
             degree_chord(0, Mode::Major, 0),
             degree_chord(0, Mode::Major, 4),
