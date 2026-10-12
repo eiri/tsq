@@ -12,6 +12,7 @@ pub fn pitch_freq(pitch: u8) -> f32 {
     440.0 * 2.0_f32.powf((pitch as f32 - 69.0) / 12.0)
 }
 
+#[cfg(test)]
 pub fn freq_pitch(freq: f32) -> u8 {
     (69.0 + 12.0 * (freq / 440.0).log2())
         .round()
