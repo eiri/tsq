@@ -73,6 +73,8 @@ pub enum Audition {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Major,
+    // Full-pattern generation is currently an offline entry point.
+    #[cfg_attr(not(test), expect(dead_code))]
     Minor,
 }
 
@@ -84,8 +86,31 @@ pub enum ArpShape {
     Repeat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seeds {
+    pub melody: u64,
+    pub harmony: u64,
+    pub arpeggio: u64,
+    pub groove: u64,
+    pub bass: u64,
+}
+
+impl Seeds {
+    fn from_rng(rng: &mut fastrand::Rng) -> Self {
+        // Keep this order fixed so each stage has an independent stream.
+        Self {
+            melody: rng.u64(..),
+            harmony: rng.u64(..),
+            arpeggio: rng.u64(..),
+            groove: rng.u64(..),
+            bass: rng.u64(..),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Pattern {
+    pub seeds: Seeds,
     pub tonic: u8,
     pub mode: Mode,
     pub melody: [Option<MelodyStep>; STEPS],
@@ -360,9 +385,9 @@ fn groove_steps(groove: Groove) -> [DrumStep; PAGE_STEPS] {
     })
 }
 
-fn set_drums(pattern: &mut Pattern) {
+fn set_drums(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
     // Pick one groove and repeat its anchors across all eight bars.
-    let groove = match fastrand::usize(0..4) {
+    let groove = match rng.usize(0..4) {
         0 => Groove::Backbeat,
         1 => Groove::FourFloor,
         2 => Groove::HalfTime,
@@ -391,6 +416,7 @@ impl Default for Pattern {
     fn default() -> Self {
         let bar = groove_steps(Groove::Backbeat);
         let mut pattern = Self {
+            seeds: Seeds::from_rng(&mut fastrand::Rng::with_seed(0)),
             tonic: 0,
             mode: Mode::Major,
             melody: MELODY.map(|note| {
@@ -487,57 +513,90 @@ fn random_melody(tonic: u8, mode: Mode, rng: &mut fastrand::Rng) -> [Option<Melo
     melody
 }
 
+fn random_style(rng: &mut fastrand::Rng) -> MelodyStyle {
+    if rng.bool() {
+        MelodyStyle::Pluck
+    } else {
+        MelodyStyle::Sustain
+    }
+}
+
+fn random_bass(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
+    // Choose only the bass rhythm; pitches come from the current harmony.
+    let rhythm = rng.usize(0..BASS_PATTERNS.len());
+    let high = rng.bool();
+    pattern.bass = std::array::from_fn(|i| {
+        let step = i % PAGE_STEPS;
+        (BASS_PATTERNS[rhythm][step] || (step == 5 && high)).then_some(0.0)
+    });
+    set_bass(pattern);
+}
+
+// Retain full-pattern entry points for tests and offline rendering.
+#[cfg_attr(not(test), expect(dead_code))]
 pub fn random_pattern() -> Pattern {
-    let tonic = fastrand::u8(0..12);
-    let mode = if fastrand::bool() {
+    seeded_pattern(fastrand::u64(..))
+}
+
+#[cfg_attr(not(test), expect(dead_code))]
+pub fn seeded_pattern(seed: u64) -> Pattern {
+    let mut root = fastrand::Rng::with_seed(seed);
+    let seeds = Seeds::from_rng(&mut root);
+    let tonic = root.u8(0..12);
+    let mode = if root.bool() {
         Mode::Major
     } else {
         Mode::Minor
     };
-    let melody = random_melody(tonic, mode, &mut fastrand::Rng::new());
-    let rhythm = fastrand::usize(0..BASS_PATTERNS.len());
-    let high = fastrand::bool();
+    let mut melody_rng = fastrand::Rng::with_seed(seeds.melody);
 
+    // Isolate stage draws so changes in accompaniment cannot change the lead.
     let mut pattern = Pattern {
+        seeds,
         tonic,
         mode,
-        melody,
+        melody: random_melody(tonic, mode, &mut melody_rng),
         arpeggio: [None; STEPS],
         arpeggio_roots: [0; STEPS / PAGE_STEPS],
         arpeggio_shape: ArpShape::Classic,
         arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
-        bass: std::array::from_fn(|i| {
-            let step = i % PAGE_STEPS;
-            (BASS_PATTERNS[rhythm][step] || (step == 5 && high)).then_some(0.0)
-        }),
+        bass: [None; STEPS],
         drums: [DrumStep::default(); STEPS],
-        melody_style: if fastrand::bool() {
-            MelodyStyle::Pluck
-        } else {
-            MelodyStyle::Sustain
-        },
+        melody_style: random_style(&mut melody_rng),
     };
-    pattern.arpeggio_roots = harmony_roots(&pattern, &mut fastrand::Rng::new());
-    random_arp_shape(&mut pattern, &mut fastrand::Rng::new());
+    pattern.arpeggio_roots = harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seeds.harmony));
+    random_arp_shape(&mut pattern, &mut fastrand::Rng::with_seed(seeds.arpeggio));
     set_arpeggios(&mut pattern);
-    set_bass(&mut pattern);
-    set_drums(&mut pattern);
+    random_bass(&mut pattern, &mut fastrand::Rng::with_seed(seeds.bass));
+    set_drums(&mut pattern, &mut fastrand::Rng::with_seed(seeds.groove));
     pattern
 }
 
 pub fn random_track(pattern: &mut Pattern, track: usize) {
-    // Retry if the selected track happens to match its old pattern.
+    seeded_track(pattern, track, fastrand::u64(..));
+}
+
+pub fn seeded_track(pattern: &mut Pattern, track: usize, seed: u64) {
+    let mut root = fastrand::Rng::with_seed(seed);
+
+    // Retry only the requested stage, preserving existing track dependencies.
     loop {
-        let next = random_pattern();
+        let seed = root.u64(..);
+        let mut rng = fastrand::Rng::with_seed(seed);
         match track {
             0 => {
-                let melody = random_melody(pattern.tonic, pattern.mode, &mut fastrand::Rng::new());
-                if melody == pattern.melody && next.melody_style == pattern.melody_style {
+                let melody = random_melody(pattern.tonic, pattern.mode, &mut rng);
+                let style = random_style(&mut rng);
+                if melody == pattern.melody && style == pattern.melody_style {
                     continue;
                 }
+                pattern.seeds.melody = seed;
                 pattern.melody = melody;
-                pattern.melody_style = next.melody_style;
-                pattern.arpeggio_roots = harmony_roots(pattern, &mut fastrand::Rng::new());
+                pattern.melody_style = style;
+                pattern.arpeggio_roots = harmony_roots(
+                    pattern,
+                    &mut fastrand::Rng::with_seed(pattern.seeds.harmony),
+                );
                 for page in 0..STEPS / PAGE_STEPS - 1 {
                     if pattern.arpeggio_roots[page] == 6
                         || pattern.arpeggio_roots[page] == pattern.arpeggio_roots[page + 1]
@@ -550,8 +609,13 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
             }
             1 => {
                 let old = pattern.arpeggio;
-                pattern.arpeggio_roots = harmony_roots(pattern, &mut fastrand::Rng::new());
-                random_arp_shape(pattern, &mut fastrand::Rng::new());
+                pattern.seeds.harmony = seed;
+                pattern.seeds.arpeggio = root.u64(..);
+                pattern.arpeggio_roots = harmony_roots(pattern, &mut rng);
+                random_arp_shape(
+                    pattern,
+                    &mut fastrand::Rng::with_seed(pattern.seeds.arpeggio),
+                );
                 set_arpeggios(pattern);
                 if pattern.arpeggio == old {
                     pattern.arpeggio_shape = if pattern.arpeggio_shape == ArpShape::Up {
@@ -566,18 +630,19 @@ pub fn random_track(pattern: &mut Pattern, track: usize) {
             }
             2 => {
                 let old = pattern.bass;
-                pattern.bass = next.bass;
-                set_bass(pattern);
+                random_bass(pattern, &mut rng);
                 if pattern.bass == old {
                     continue;
                 }
+                pattern.seeds.bass = seed;
             }
             3 => {
                 let old = pattern.drums;
-                set_drums(pattern);
+                set_drums(pattern, &mut rng);
                 if pattern.drums == old {
                     continue;
                 }
+                pattern.seeds.groove = seed;
             }
             _ => return,
         }
@@ -652,6 +717,127 @@ impl AudioClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_same(a: &Pattern, b: &Pattern) {
+        assert_eq!(a.seeds, b.seeds);
+        assert_eq!(a.tonic, b.tonic);
+        assert_eq!(a.mode, b.mode);
+        assert_eq!(a.melody, b.melody);
+        assert!(a.melody_style == b.melody_style);
+        assert_eq!(a.arpeggio, b.arpeggio);
+        assert_eq!(a.arpeggio_roots, b.arpeggio_roots);
+        assert_eq!(a.arpeggio_shape, b.arpeggio_shape);
+        assert_eq!(a.arpeggio_sevenths, b.arpeggio_sevenths);
+        assert_eq!(a.bass, b.bass);
+        assert_eq!(a.drums, b.drums);
+    }
+
+    #[test]
+    fn seeded_generation_repeats() {
+        for seed in 0..16 {
+            assert_same(&seeded_pattern(seed), &seeded_pattern(seed));
+        }
+    }
+
+    #[test]
+    fn seeded_rerolls_repeat() {
+        for track in 0..TRACKS {
+            let mut a = seeded_pattern(42);
+            let mut b = a.clone();
+            seeded_track(&mut a, track, 123);
+            seeded_track(&mut b, track, 123);
+            assert_same(&a, &b);
+
+            // Only seeds belonging to the requested stage may change.
+            let old = seeded_pattern(42).seeds;
+            if track != 0 {
+                assert_eq!(a.seeds.melody, old.melody);
+            }
+            if track != 1 {
+                assert_eq!(a.seeds.harmony, old.harmony);
+                assert_eq!(a.seeds.arpeggio, old.arpeggio);
+            }
+            if track != 2 {
+                assert_eq!(a.seeds.bass, old.bass);
+            }
+            if track != 3 {
+                assert_eq!(a.seeds.groove, old.groove);
+            }
+        }
+    }
+
+    #[test]
+    fn stage_streams_are_independent() {
+        let original = seeded_pattern(42);
+        let mut altered = original.clone();
+        let mut arp = fastrand::Rng::with_seed(original.seeds.arpeggio);
+        for _ in 0..100 {
+            arp.u64(..);
+        }
+        random_arp_shape(&mut altered, &mut arp);
+        set_arpeggios(&mut altered);
+
+        // Rebuild unrelated stages after extra arpeggio draws.
+        let mut melody = fastrand::Rng::with_seed(original.seeds.melody);
+        altered.melody = random_melody(altered.tonic, altered.mode, &mut melody);
+        altered.melody_style = random_style(&mut melody);
+        set_drums(
+            &mut altered,
+            &mut fastrand::Rng::with_seed(original.seeds.groove),
+        );
+        assert_eq!(altered.melody, original.melody);
+        assert!(altered.melody_style == original.melody_style);
+        assert_eq!(altered.drums, original.drums);
+    }
+
+    #[test]
+    fn seeded_baseline_fixtures() {
+        // Event summaries preserve the seeded baseline for later listening comparisons.
+        let fixtures = [
+            (
+                0,
+                11,
+                [73, 0, 71, 71, 0, 73, 0, 75],
+                0b00001001,
+                [0, 4, 0, 1, 4, 4, 0, 0],
+                Groove::HalfTime,
+            ),
+            (
+                42,
+                3,
+                [67, 63, 65, 67, 67, 0, 0, 67],
+                0b00001011,
+                [0, 0, 0, 0, 0, 0, 0, 0],
+                Groove::HalfTime,
+            ),
+            (
+                1023,
+                11,
+                [75, 0, 73, 0, 71, 0, 73, 75],
+                0b00001101,
+                [0, 0, 0, 5, 5, 5, 5, 0],
+                Groove::Syncopated,
+            ),
+        ];
+        for (seed, tonic, pitches, bass_mask, roots, groove) in fixtures {
+            let p = seeded_pattern(seed);
+            assert_eq!(p.tonic, tonic, "seed {seed}");
+            assert_eq!(p.mode, Mode::Major, "seed {seed}");
+            assert_eq!(p.arpeggio_roots, roots, "seed {seed}");
+            assert_eq!(&p.drums[..PAGE_STEPS], &groove_steps(groove), "seed {seed}");
+            for (step, pitch) in pitches.into_iter().enumerate() {
+                let actual = p.melody[step]
+                    .map(|n| (69.0 + 12.0 * (n.freq / 440.0).log2()).round() as u8)
+                    .unwrap_or(0);
+                assert_eq!(actual, pitch, "seed {seed}, step {step}");
+                assert_eq!(
+                    p.bass[step].is_some(),
+                    bass_mask & (1 << step) != 0,
+                    "seed {seed}, step {step}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn default_pattern_fills_all_pages() {
