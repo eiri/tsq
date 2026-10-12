@@ -1,3 +1,4 @@
+mod arrange;
 mod music;
 mod psg;
 mod sequencer;

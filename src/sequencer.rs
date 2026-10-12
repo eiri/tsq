@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 
+use crate::arrange::{HarmonyPlan, degree_chord, legacy_root, melody_score};
+use crate::music::MelodyInfo;
 pub use crate::music::ToneStep;
 use crate::music::{ARP_GATE, BASS_GATE, PLUCK_GATE, SHORT_GATE, SUSTAIN_GATE, freq_pitch};
 
@@ -118,7 +120,7 @@ pub struct Pattern {
     pub mode: Mode,
     pub melody: [Option<MelodyStep>; STEPS],
     pub arpeggio: [Option<ToneStep>; STEPS],
-    pub(crate) arpeggio_roots: [u8; STEPS / PAGE_STEPS],
+    pub harmony: HarmonyPlan,
     pub(crate) arpeggio_shape: ArpShape,
     pub(crate) arpeggio_sevenths: [bool; STEPS / PAGE_STEPS],
     pub bass: [Option<ToneStep>; STEPS],
@@ -134,7 +136,7 @@ const MELODY: [u8; STEPS] = [
     64, 65, 0, 67, 0, 62, 65, 60, 64,
 ];
 // C, Bb, G, Eb, Eb, C, Dm, G: follow the cue, then the next theme.
-const DEFAULT_ROOTS: [u8; STEPS / PAGE_STEPS] = [0, 7, 4, 8, 8, 0, 1, 4];
+
 const BASS_PATTERNS: [[bool; PAGE_STEPS]; 4] = [
     [true, true, true, true, false, false, false, false],
     [true, true, false, true, false, false, false, false],
@@ -177,10 +179,10 @@ fn chord_classes(tonic: u8, mode: Mode, root: u8) -> [i32; 3] {
     chord_at(tonic, mode, root).map(pitch_class)
 }
 
-fn page_score(pattern: &Pattern, page: usize, root: u8) -> i32 {
+fn page_score(pattern: &Pattern, info: &MelodyInfo, page: usize, root: u8) -> i32 {
     let chord = chord_classes(pattern.tonic, pattern.mode, root);
     let start = page * PAGE_STEPS;
-    let mut score = 0;
+    let mut score = melody_score(info, page, degree_chord(pattern.tonic, pattern.mode, root)) / 60;
 
     // Anchor the harmony to prominent notes; short notes may decorate the chord.
     for step in 0..PAGE_STEPS {
@@ -243,6 +245,7 @@ fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAG
     const PAGES: usize = STEPS / PAGE_STEPS;
     let variety: [[i32; 7]; PAGES] =
         std::array::from_fn(|_| std::array::from_fn(|_| rng.i32(0..4)));
+    let info = MelodyInfo::new(&pattern.melody);
     let mut best = [0; PAGES];
     let mut best_score = i32::MIN;
 
@@ -250,7 +253,7 @@ fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAG
     for first in 0..7 {
         let mut scores = [[i32::MIN; 7]; PAGES];
         let mut parents = [[0u8; 7]; PAGES];
-        scores[0][first] = page_score(pattern, 0, first as u8) + variety[0][first];
+        scores[0][first] = page_score(pattern, &info, 0, first as u8) + variety[0][first];
         for page in 1..PAGES {
             for root in 0..7 {
                 for previous in 0..7 {
@@ -259,7 +262,7 @@ fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAG
                     }
                     let score = scores[page - 1][previous]
                         + transition(previous as u8, root as u8)
-                        + page_score(pattern, page, root as u8)
+                        + page_score(pattern, &info, page, root as u8)
                         + variety[page][root];
                     if score > scores[page][root] {
                         scores[page][root] = score;
@@ -285,10 +288,10 @@ fn harmony_roots(pattern: &Pattern, rng: &mut fastrand::Rng) -> [u8; STEPS / PAG
 }
 
 fn page_chord(pattern: &Pattern, page: usize) -> [f32; 4] {
-    match pattern.arpeggio_roots[page] {
+    match legacy_root(pattern, page) {
         // Borrow Bb and Eb major to follow the cue's chromatic notes.
         7 | 8 => {
-            let note = if pattern.arpeggio_roots[page] == 7 {
+            let note = if legacy_root(pattern, page) == 7 {
                 70
             } else {
                 63
@@ -336,12 +339,12 @@ fn random_arp_shape(pattern: &mut Pattern, rng: &mut fastrand::Rng) {
 
     // Add sevenths to moving chords, especially a dominant before tonic.
     for page in 0..STEPS / PAGE_STEPS - 1 {
-        let root = pattern.arpeggio_roots[page];
+        let root = legacy_root(pattern, page);
         pattern.arpeggio_sevenths[page] =
             matches!(pattern.arpeggio_shape, ArpShape::Up | ArpShape::Down)
                 && root != 6
-                && root != pattern.arpeggio_roots[page + 1]
-                && (root == 4 && pattern.arpeggio_roots[page + 1] == 0 || rng.usize(0..4) == 0);
+                && root != legacy_root(pattern, page + 1)
+                && (root == 4 && legacy_root(pattern, page + 1) == 0 || rng.usize(0..4) == 0);
     }
     pattern.arpeggio_sevenths[STEPS / PAGE_STEPS - 1] = false;
 }
@@ -440,7 +443,7 @@ impl Default for Pattern {
                 })
             }),
             arpeggio: [None; STEPS],
-            arpeggio_roots: DEFAULT_ROOTS,
+            harmony: HarmonyPlan::preset(),
             arpeggio_shape: ArpShape::Classic,
             arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
             bass: std::array::from_fn(|i| {
@@ -596,14 +599,18 @@ pub fn seeded_pattern(seed: u64) -> Pattern {
         mode,
         melody,
         arpeggio: [None; STEPS],
-        arpeggio_roots: [0; STEPS / PAGE_STEPS],
+        harmony: HarmonyPlan::from_degrees(tonic, mode, [0; STEPS / PAGE_STEPS]),
         arpeggio_shape: ArpShape::Classic,
         arpeggio_sevenths: [false; STEPS / PAGE_STEPS],
         bass: [None; STEPS],
         drums: [DrumStep::default(); STEPS],
         melody_style: style,
     };
-    pattern.arpeggio_roots = harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seeds.harmony));
+    pattern.harmony = HarmonyPlan::from_degrees(
+        tonic,
+        mode,
+        harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seeds.harmony)),
+    );
     random_arp_shape(&mut pattern, &mut fastrand::Rng::with_seed(seeds.arpeggio));
     set_arpeggios(&mut pattern);
     random_bass(&mut pattern, &mut fastrand::Rng::with_seed(seeds.bass));
@@ -634,13 +641,17 @@ pub fn seeded_track(pattern: &mut Pattern, track: usize, seed: u64) {
                 pattern.seeds.melody = seed;
                 pattern.melody = melody;
                 pattern.melody_style = style;
-                pattern.arpeggio_roots = harmony_roots(
-                    pattern,
-                    &mut fastrand::Rng::with_seed(pattern.seeds.harmony),
+                pattern.harmony = HarmonyPlan::from_degrees(
+                    pattern.tonic,
+                    pattern.mode,
+                    harmony_roots(
+                        pattern,
+                        &mut fastrand::Rng::with_seed(pattern.seeds.harmony),
+                    ),
                 );
                 for page in 0..STEPS / PAGE_STEPS - 1 {
-                    if pattern.arpeggio_roots[page] == 6
-                        || pattern.arpeggio_roots[page] == pattern.arpeggio_roots[page + 1]
+                    if legacy_root(pattern, page) == 6
+                        || pattern.harmony.chords[page] == pattern.harmony.chords[page + 1]
                     {
                         pattern.arpeggio_sevenths[page] = false;
                     }
@@ -652,7 +663,11 @@ pub fn seeded_track(pattern: &mut Pattern, track: usize, seed: u64) {
                 let old = pattern.arpeggio;
                 pattern.seeds.harmony = seed;
                 pattern.seeds.arpeggio = root.u64(..);
-                pattern.arpeggio_roots = harmony_roots(pattern, &mut rng);
+                pattern.harmony = HarmonyPlan::from_degrees(
+                    pattern.tonic,
+                    pattern.mode,
+                    harmony_roots(pattern, &mut rng),
+                );
                 random_arp_shape(
                     pattern,
                     &mut fastrand::Rng::with_seed(pattern.seeds.arpeggio),
@@ -767,7 +782,7 @@ mod tests {
         assert_eq!(a.melody, b.melody);
         assert!(a.melody_style == b.melody_style);
         assert_eq!(a.arpeggio, b.arpeggio);
-        assert_eq!(a.arpeggio_roots, b.arpeggio_roots);
+        assert_eq!(a.harmony, b.harmony);
         assert_eq!(a.arpeggio_shape, b.arpeggio_shape);
         assert_eq!(a.arpeggio_sevenths, b.arpeggio_sevenths);
         assert_eq!(a.bass, b.bass);
@@ -867,11 +882,10 @@ mod tests {
                 Groove::Syncopated,
             ),
         ];
-        for (seed, tonic, pitches, bass_mask, roots, groove) in fixtures {
+        for (seed, tonic, pitches, bass_mask, _baseline_roots, groove) in fixtures {
             let p = seeded_pattern(seed);
             assert_eq!(p.tonic, tonic, "seed {seed}");
             assert_eq!(p.mode, Mode::Major, "seed {seed}");
-            assert_eq!(p.arpeggio_roots, roots, "seed {seed}");
             assert_eq!(&p.drums[..PAGE_STEPS], &groove_steps(groove), "seed {seed}");
             for (step, pitch) in pitches.into_iter().enumerate() {
                 let actual = p.melody[step].map(|n| n.pitch).unwrap_or(0);
@@ -1080,7 +1094,7 @@ mod tests {
                 assert_eq!((pattern.tonic, pattern.mode), (before.tonic, before.mode));
             }
             if track >= 2 {
-                assert_eq!(pattern.arpeggio_roots, before.arpeggio_roots);
+                assert_eq!(pattern.harmony, before.harmony);
             } else if track == 1 {
                 assert_ne!(pattern.arpeggio, before.arpeggio);
             }
@@ -1113,10 +1127,10 @@ mod tests {
         assert_ne!(pattern.melody, old_melody);
         assert_eq!(pattern.drums, old_drums);
         assert_eq!(pattern.bass.map(|note| note.is_some()), old_rhythm);
-        assert!(pattern.arpeggio_roots.iter().all(|&root| root < 7));
+        assert!(pattern.harmony.chords.iter().all(|c| c.root < 12));
         for page in 0..STEPS / PAGE_STEPS {
             let start = page * PAGE_STEPS;
-            let chord = chord_at(pattern.tonic, pattern.mode, pattern.arpeggio_roots[page]);
+            let chord = chord_at(pattern.tonic, pattern.mode, legacy_root(&pattern, page));
             assert_eq!(
                 pattern.arpeggio[start],
                 Some(ToneStep::new(freq_pitch(chord[0]), ARP_GATE))
@@ -1259,9 +1273,16 @@ mod tests {
                         ),
                         ..Pattern::default()
                     };
-                    pattern.arpeggio_roots =
-                        harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seed + 100));
-                    assert_eq!(pattern.arpeggio_roots[7], 0, "{tonic} {mode:?} {seed}");
+                    pattern.harmony = HarmonyPlan::from_degrees(
+                        tonic,
+                        mode,
+                        harmony_roots(&pattern, &mut fastrand::Rng::with_seed(seed + 100)),
+                    );
+                    assert_eq!(
+                        pattern.harmony.chords[7],
+                        degree_chord(tonic, mode, 0),
+                        "{tonic} {mode:?} {seed}"
+                    );
                     set_arpeggios(&mut pattern);
                     set_bass(&mut pattern);
                     assert_eq!(
@@ -1288,7 +1309,8 @@ mod tests {
                 bend: false,
             });
         }
-        assert!(page_score(&pattern, 0, 0) > page_score(&pattern, 0, 1));
+        let info = MelodyInfo::new(&pattern.melody);
+        assert!(page_score(&pattern, &info, 0, 0) > page_score(&pattern, &info, 0, 1));
     }
 
     #[test]
@@ -1297,12 +1319,12 @@ mod tests {
             let mut pattern = Pattern {
                 tonic: 2,
                 mode,
-                arpeggio_roots: [0, 1, 2, 3, 4, 5, 6, 0],
+                harmony: HarmonyPlan::from_degrees(2, mode, [0, 1, 2, 3, 4, 5, 6, 0]),
                 ..Pattern::default()
             };
             set_arpeggios(&mut pattern);
             for page in 0..STEPS / PAGE_STEPS {
-                let chord = chord_at(2, mode, pattern.arpeggio_roots[page]);
+                let chord = chord_at(2, mode, legacy_root(&pattern, page));
                 let start = page * PAGE_STEPS;
                 assert_eq!(
                     pattern.arpeggio[start..start + PAGE_STEPS],
@@ -1325,7 +1347,7 @@ mod tests {
     #[test]
     fn random_arpeggios_include_all_shapes() {
         let mut pattern = Pattern {
-            arpeggio_roots: [0, 4, 0, 1, 4, 0, 3, 0],
+            harmony: HarmonyPlan::from_degrees(0, Mode::Major, [0, 4, 0, 1, 4, 0, 3, 0]),
             ..Pattern::default()
         };
         let mut seen = [false; 5];
@@ -1360,7 +1382,7 @@ mod tests {
         ] {
             let mut pattern = Pattern {
                 arpeggio_shape: shape,
-                arpeggio_roots: [0, 1, 2, 3, 4, 5, 6, 0],
+                harmony: HarmonyPlan::from_degrees(0, Mode::Major, [0, 1, 2, 3, 4, 5, 6, 0]),
                 ..Pattern::default()
             };
             set_arpeggios(&mut pattern);
@@ -1471,7 +1493,7 @@ mod tests {
                 let mut pattern = Pattern {
                     tonic: 2,
                     mode,
-                    arpeggio_roots: [0, 1, 2, 3, 4, 5, 6, 0],
+                    harmony: HarmonyPlan::from_degrees(2, mode, [0, 1, 2, 3, 4, 5, 6, 0]),
                     ..Pattern::default()
                 };
                 set_arpeggios(&mut pattern);
@@ -1590,7 +1612,7 @@ mod tests {
         }
         for step in 0..STEPS {
             let page = step / PAGE_STEPS;
-            let chord = chord_at(p.tonic, p.mode, p.arpeggio_roots[page]);
+            let chord = chord_at(p.tonic, p.mode, legacy_root(&p, page));
             assert_eq!(
                 p.arpeggio[step],
                 arp_notes(
@@ -1608,7 +1630,7 @@ mod tests {
             );
             if p.arpeggio_sevenths[page] {
                 assert!(page < STEPS / PAGE_STEPS - 1);
-                assert_ne!(p.arpeggio_roots[page], p.arpeggio_roots[page + 1]);
+                assert_ne!(p.harmony.chords[page], p.harmony.chords[page + 1]);
             }
             let root = ToneStep::new(freq_pitch(page_chord(&p, page)[0] / 4.0), BASS_GATE);
             if step % PAGE_STEPS == 5 {
