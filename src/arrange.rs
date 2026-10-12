@@ -1,7 +1,7 @@
 //! Harmony is shared by every pitched supporting track.
 use crate::music::{ARP_GATE, ToneStep};
 use crate::music::{BAR_UNITS, BARS, Interval, LOOP_UNITS, MelodyInfo, STEP_UNITS, beat_weight};
-use crate::sequencer::{ArpShape, Mode, Pattern, STEPS};
+use crate::sequencer::{ArpShape, DrumStep, Groove, Hat, Mode, Pattern, STEPS, groove_steps};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -515,6 +515,167 @@ pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastr
     }
 }
 
+pub const BASS_LOW: u8 = 28;
+pub const BASS_HIGH: u8 = 55;
+const BASS_GATE: u16 = 32;
+const APPROACH_GATE: u16 = 30;
+
+struct GroovePlan {
+    family: Groove,
+    dense: bool,
+    empty: bool,
+    fills: [bool; BARS],
+    variation: [u8; 4],
+}
+
+pub fn render_drums(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand::Rng) {
+    let attacks: usize = info.bars.iter().map(|b| b.attacks as usize).sum();
+    let accent_count: u32 = info.bars.iter().map(|b| b.accents.count_ones()).sum();
+    let choice = (rng.usize(0..4) + usize::from(attacks > 32) + usize::from(accent_count > 16)) % 4;
+    let family = if attacks == 0 {
+        Groove::Backbeat
+    } else {
+        match choice {
+            0 => Groove::Backbeat,
+            1 => Groove::FourFloor,
+            2 => Groove::HalfTime,
+            _ => Groove::Syncopated,
+        }
+    };
+    let plan = GroovePlan {
+        family,
+        dense: attacks > 32,
+        empty: attacks == 0,
+        fills: std::array::from_fn(|b| {
+            info.bars[b].ending && info.bars[b].attacks <= 3 && rng.bool()
+        }),
+        variation: std::array::from_fn(|_| rng.u8(..)),
+    };
+    let template = groove_steps(plan.family);
+    pattern.drums = [DrumStep::default(); STEPS];
+    for bar in 0..BARS {
+        let summary = info.bars[bar];
+        let variation = plan.variation[bar % 4];
+        for (step, &anchor) in template.iter().enumerate() {
+            let mut hit = anchor;
+            // Keep the template's kick/snare anchors; hats and extra kicks leave lead space.
+            if plan.empty || plan.dense || summary.coverage > BAR_UNITS - STEP_UNITS {
+                if step % 2 == 1 {
+                    hit.hat = None;
+                }
+            } else if step % 2 == 1 && variation & (1 << (step / 2)) == 0 {
+                hit.hat = None;
+            }
+            if !plan.empty
+                && summary.accents & (1 << step) != 0
+                && step % 2 == 0
+                && variation & 16 != 0
+                && summary.attacks <= 4
+            {
+                hit.kick = true;
+            }
+            if plan.fills[bar] && step >= 6 {
+                hit.snare = true;
+                hit.hat = Some(if step == 7 { Hat::Open } else { Hat::Closed });
+            }
+            pattern.drums[bar * 8 + step] = hit;
+        }
+    }
+}
+
+fn bass_roots(harmony: HarmonyPlan, rng: &mut fastrand::Rng) -> [u8; BARS] {
+    let options: Vec<Vec<_>> = harmony
+        .chords
+        .iter()
+        .map(|c| {
+            (BASS_LOW..=BASS_HIGH)
+                .filter(|p| p % 12 == c.root)
+                .collect()
+        })
+        .collect();
+    let mut paths = Vec::new();
+    for first in 0..options[0].len() {
+        let mut states: Vec<Option<Path>> = vec![None; options[0].len()];
+        states[first] = Some(Path {
+            score: -i32::from(options[0][first].abs_diff(40)),
+            slots: vec![first],
+        });
+        for bar in 1..BARS {
+            let mut next = vec![None; options[bar].len()];
+            for (to, state) in next.iter_mut().enumerate() {
+                for (from, previous) in states.iter().enumerate() {
+                    let Some(previous) = previous else {
+                        continue;
+                    };
+                    let score = previous.score
+                        - i32::from(options[bar - 1][from].abs_diff(options[bar][to]));
+                    if state.as_ref().is_none_or(|p: &Path| score > p.score) {
+                        let mut slots = previous.slots.clone();
+                        slots.push(to);
+                        *state = Some(Path { score, slots });
+                    }
+                }
+            }
+            states = next;
+        }
+        for (last, path) in states.into_iter().enumerate() {
+            if let Some(mut path) = path {
+                path.score -= i32::from(options[BARS - 1][last].abs_diff(options[0][first]));
+                paths.push(path);
+            }
+        }
+    }
+    retain(&mut paths, COMPLETE_PATHS);
+    let best = paths[0].score;
+    paths.retain(|p| p.score >= best - 4);
+    let path = &paths[rng.usize(0..paths.len())];
+    std::array::from_fn(|b| options[b][path.slots[b]])
+}
+
+pub fn render_bass(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand::Rng) {
+    let roots = bass_roots(pattern.harmony, rng);
+    pattern.bass = [None; STEPS];
+    for bar in 0..BARS {
+        let root = roots[bar];
+        let chord = pattern.harmony.chords[bar];
+        let summary = info.bars[bar];
+        for step in 0..8 {
+            let kick = pattern.drums[bar * 8 + step].kick;
+            let important = step == 0 || (step == 4 && kick);
+            let gap = info
+                .sounding((bar * 8 + step) as u16 * STEP_UNITS)
+                .is_none();
+            let extra = kick && summary.attacks <= 4 && rng.bool();
+            if important
+                || extra
+                || (gap && step == 6 && summary.attacks > 0 && rng.usize(0..4) == 0)
+            {
+                let mut pitch = root;
+                if !important && rng.usize(0..3) == 0 {
+                    pitch = (BASS_LOW..=BASS_HIGH)
+                        .filter(|p| p % 12 == chord.classes()[2])
+                        .min_by_key(|p| p.abs_diff(root))
+                        .unwrap();
+                }
+                pattern.bass[bar * 8 + step] = Some(ToneStep::new(pitch, BASS_GATE));
+            }
+        }
+        let next = (bar + 1) % BARS;
+        // Short approaches resolve to the actual next downbeat, including the loop boundary.
+        if chord != pattern.harmony.chords[next] && summary.attacks <= 3 && rng.usize(0..4) == 0 {
+            let target = roots[next];
+            let approach = if target > root {
+                target.saturating_sub(1)
+            } else {
+                target + 1
+            };
+            if (BASS_LOW..=BASS_HIGH).contains(&approach) {
+                pattern.bass[bar * 8 + 7] = Some(ToneStep::new(approach, APPROACH_GATE));
+            }
+        }
+    }
+}
+
 pub fn legacy_root(pattern: &Pattern, bar: usize) -> u8 {
     let chord = pattern.harmony.chords[bar];
     (0..9)
@@ -540,6 +701,105 @@ mod tests {
             });
         }
         MelodyInfo::new(&melody)
+    }
+
+    #[test]
+    fn groove_anchors_and_fills() {
+        let sparse = info(&[(24, 72, 480), (56, 72, 480)]);
+        let dense = info(&[
+            (24, 72, 60),
+            (26, 72, 60),
+            (28, 72, 60),
+            (30, 72, 60),
+            (31, 72, 480),
+            (56, 72, 60),
+            (58, 72, 60),
+            (60, 72, 60),
+            (62, 72, 60),
+            (63, 72, 480),
+        ]);
+        let mut sparse_fills = 0;
+        let mut dense_fills = 0;
+        for seed in 0..32 {
+            let mut a = Pattern::default();
+            let mut b = a.clone();
+            render_drums(&mut a, &sparse, &mut fastrand::Rng::with_seed(seed));
+            render_drums(&mut b, &dense, &mut fastrand::Rng::with_seed(seed));
+            for bar in 0..BARS {
+                assert!(a.drums[bar * 8].kick && b.drums[bar * 8].kick);
+                if !sparse.bars[bar].ending {
+                    for step in [0, 2, 4, 6] {
+                        assert_eq!(a.drums[step].snare, a.drums[bar * 8 + step].snare);
+                    }
+                }
+            }
+            sparse_fills += usize::from(a.drums[31].snare) + usize::from(a.drums[63].snare);
+            dense_fills += usize::from(b.drums[31].snare) + usize::from(b.drums[63].snare);
+        }
+        assert!(sparse_fills > dense_fills);
+        let empty = info(&[]);
+        let mut fallback = Pattern::default();
+        render_drums(&mut fallback, &empty, &mut fastrand::Rng::with_seed(1));
+        assert!(fallback.drums.chunks(8).all(|b| b == &fallback.drums[..8]));
+        assert!(fallback.drums.iter().filter(|d| d.hat.is_some()).count() <= 32);
+    }
+
+    #[test]
+    fn accents_affect_groove() {
+        let a = info(&[(0, 72, 60), (2, 72, 60)]);
+        let b = info(&[(0, 72, 60), (3, 72, 60)]);
+        let mut changed = false;
+        for seed in 0..32 {
+            let mut x = Pattern::default();
+            let mut y = x.clone();
+            render_drums(&mut x, &a, &mut fastrand::Rng::with_seed(seed));
+            render_drums(&mut y, &b, &mut fastrand::Rng::with_seed(seed));
+            changed |= x.drums[2] != y.drums[2];
+        }
+        assert!(changed);
+    }
+
+    #[test]
+    fn bass_reads_existing_drums() {
+        let info = info(&[]);
+        let mut pattern = Pattern {
+            harmony: HarmonyPlan::from_degrees(0, Mode::Major, [0, 4, 0, 4, 0, 4, 0, 4]),
+            drums: [DrumStep::default(); STEPS],
+            ..Pattern::default()
+        };
+        for bar in 0..BARS {
+            pattern.drums[bar * 8].kick = true;
+        }
+        let drums = pattern.drums;
+        let mut approaches = 0;
+        for seed in 0..32 {
+            render_bass(&mut pattern, &info, &mut fastrand::Rng::with_seed(seed));
+            assert_eq!(pattern.drums, drums);
+            let mut repeated = pattern.clone();
+            render_bass(&mut repeated, &info, &mut fastrand::Rng::with_seed(seed));
+            assert_eq!(pattern.bass, repeated.bass);
+            for bar in 0..BARS {
+                assert_eq!(
+                    pattern.bass[bar * 8].unwrap().pitch % 12,
+                    pattern.harmony.chords[bar].root
+                );
+                assert!(pattern.bass[bar * 8 + 4].is_none());
+                if let Some(approach) = pattern.bass[bar * 8 + 7] {
+                    let target = pattern.bass[((bar + 1) % BARS) * 8].unwrap();
+                    assert_eq!(approach.duration, APPROACH_GATE);
+                    assert_eq!(approach.pitch.abs_diff(target.pitch), 1);
+                    approaches += 1;
+                }
+            }
+            assert!(
+                pattern
+                    .bass
+                    .iter()
+                    .flatten()
+                    .all(|n| (BASS_LOW..=BASS_HIGH).contains(&n.pitch))
+            );
+        }
+        assert!(approaches > 0);
     }
 
     #[test]
