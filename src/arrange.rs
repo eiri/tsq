@@ -1,7 +1,9 @@
 //! Harmony is shared by every pitched supporting track.
 use crate::music::{ARP_GATE, ToneStep};
 use crate::music::{BAR_UNITS, BARS, Interval, LOOP_UNITS, MelodyInfo, STEP_UNITS, beat_weight};
-use crate::sequencer::{ArpShape, DrumStep, Groove, Hat, Mode, Pattern, STEPS, groove_steps};
+use crate::sequencer::{
+    ArpShape, DrumStep, Groove, Hat, MelodyStep, Mode, Pattern, STEPS, groove_steps,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -59,24 +61,33 @@ pub fn degree_chord(tonic: u8, mode: Mode, degree: u8) -> Chord {
 }
 
 impl HarmonyPlan {
+    #[cfg(test)]
     pub fn from_degrees(tonic: u8, mode: Mode, roots: [u8; BARS]) -> Self {
         Self {
-            chords: roots.map(|root| match root {
-                7 => Chord {
-                    root: (tonic + 10) % 12,
-                    quality: Quality::Major,
-                },
-                8 => Chord {
-                    root: (tonic + 3) % 12,
-                    quality: Quality::Major,
-                },
-                _ => degree_chord(tonic, mode, root),
-            }),
+            chords: roots.map(|root| degree_chord(tonic, mode, root)),
         }
     }
 
     pub fn preset() -> Self {
-        Self::from_degrees(0, Mode::Major, [0, 7, 4, 8, 8, 0, 1, 4])
+        let major = |root| Chord {
+            root,
+            quality: Quality::Major,
+        };
+        Self {
+            chords: [
+                major(0),
+                major(10),
+                major(7),
+                major(3),
+                major(3),
+                major(0),
+                Chord {
+                    root: 2,
+                    quality: Quality::Minor,
+                },
+                major(7),
+            ],
+        }
     }
 }
 
@@ -115,7 +126,7 @@ fn neighbors(info: &MelodyInfo, attack: usize) -> Option<(Interval, Interval, In
         .copied()
         .filter(|i| i.start == i.attack as u16 * STEP_UNITS)
         .collect();
-    if notes.len() < 3 {
+    if notes.len() < 2 {
         return None;
     }
     let index = notes.iter().position(|i| i.attack == attack)?;
@@ -136,7 +147,8 @@ fn resolves(info: &MelodyInfo, interval: &Interval, bar: usize, chord: Chord) ->
     let delta = i16::from(note.pitch) - i16::from(before.pitch);
     let next_delta = i16::from(after.pitch) - i16::from(note.pitch);
     let stepwise = (1..=2).contains(&delta.abs()) && (1..=2).contains(&next_delta.abs());
-    let preparation = classes.contains(&(before.pitch % 12)) && before.end == note.start;
+    let preparation =
+        classes.contains(&(before.pitch % 12)) && before.end % LOOP_UNITS == note.start;
     let resolution = classes.contains(&(after.pitch % 12)) && to_next <= RESOLUTION_UNITS;
     let decoration = preparation
         && resolution
@@ -435,14 +447,12 @@ fn arp_movement(from: [u8; 3], to: [u8; 3], from_mask: &[usize], shape: ArpShape
 }
 
 pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand::Rng) {
-    pattern.arpeggio_shape = match rng.usize(0..4) {
+    let shape = match rng.usize(0..4) {
         0 => ArpShape::Classic,
         1 => ArpShape::Up,
         2 => ArpShape::Down,
         _ => ArpShape::Repeat,
     };
-    pattern.arpeggio_sevenths.fill(false);
-    let shape = pattern.arpeggio_shape;
     let options: Vec<_> = (0..BARS)
         .map(|b| placements(pattern.harmony.chords[b], info, b))
         .collect();
@@ -676,13 +686,38 @@ pub fn render_bass(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand:
     }
 }
 
-pub fn legacy_root(pattern: &Pattern, bar: usize) -> u8 {
-    let chord = pattern.harmony.chords[bar];
-    (0..9)
-        .find(|&r| {
-            HarmonyPlan::from_degrees(pattern.tonic, pattern.mode, [r; BARS]).chords[0] == chord
+pub fn arrange(pattern: &mut Pattern) {
+    // One analysis feeds all stages; each stage owns its random stream.
+    let info = MelodyInfo::new(&pattern.melody);
+    let seeds = pattern.seeds;
+    pattern.harmony = choose_harmony(
+        &info,
+        pattern.tonic,
+        pattern.mode,
+        &mut fastrand::Rng::with_seed(seeds.harmony),
+    );
+    render_arpeggio(
+        pattern,
+        &info,
+        &mut fastrand::Rng::with_seed(seeds.arpeggio),
+    );
+    render_drums(pattern, &info, &mut fastrand::Rng::with_seed(seeds.groove));
+    render_bass(pattern, &info, &mut fastrand::Rng::with_seed(seeds.bass));
+}
+
+#[cfg_attr(not(test), expect(dead_code))]
+pub fn with_melody(pattern: &Pattern, melody: [Option<MelodyStep>; STEPS]) -> Pattern {
+    // A future editor can publish this complete snapshot without holding an audio lock.
+    let mut next = pattern.clone();
+    next.melody = melody.map(|note| {
+        note.map(|mut note| {
+            note.pitch = note.pitch.min(127);
+            note.duration = crate::music::duration(note.duration);
+            note
         })
-        .unwrap_or(0)
+    });
+    arrange(&mut next);
+    next
 }
 
 #[cfg(test)]
