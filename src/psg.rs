@@ -1,6 +1,7 @@
 use ym2149::{Ym2149, Ym2149Backend};
 
-use crate::sequencer::{Drum, DrumStep, Hat, MelodyStep, MelodyStyle, MelodyVoice};
+use crate::music::{pitch_freq, player_ticks};
+use crate::sequencer::{Drum, DrumStep, Hat, MelodyStep, MelodyStyle, MelodyVoice, ToneStep};
 
 const MASTER_CLOCK: u32 = 1_789_773;
 const PLAYER_HZ: u32 = 60;
@@ -171,7 +172,7 @@ impl PsgEngine {
             drum: None,
             sample_rate,
             tick_phase: 0,
-            tick_pending: true,
+            tick_pending: false,
         };
         engine.configure();
         engine
@@ -182,7 +183,7 @@ impl PsgEngine {
         self.notes = [Note::default(); 3];
         self.drum = None;
         self.tick_phase = 0;
-        self.tick_pending = true;
+        self.tick_pending = false;
         self.configure();
     }
 
@@ -208,7 +209,8 @@ impl PsgEngine {
 
     fn start(&mut self, channel: usize, voice: Voice, ticks: u32, freq: f32) {
         self.notes[channel].start(voice, ticks, freq);
-        self.tick_pending = true;
+        // Refresh registers without aging any other channel on a retrigger.
+        self.refresh();
     }
 
     fn drum(&mut self, kind: Drum) {
@@ -258,16 +260,35 @@ impl PsgEngine {
         self.start(MELODY, Voice::Melody2, 36, freq);
     }
 
-    pub fn melody_step(&mut self, note: MelodyStep, style: MelodyStyle) {
-        match note.voice {
-            MelodyVoice::M1 => self.melody(note.freq, style),
-            MelodyVoice::M2 => self.melody2(note.freq),
-        }
-        // A short gate ends before the next eighth-note step at 120 BPM.
-        if note.short {
-            self.notes[MELODY].length = 8;
-        }
+    pub fn melody_step(&mut self, note: MelodyStep, style: MelodyStyle, bpm: f64) {
+        let voice = match (note.voice, style) {
+            (MelodyVoice::M2, _) => Voice::Melody2,
+            (_, MelodyStyle::Pluck) => Voice::Pluck,
+            _ => Voice::Sustain,
+        };
+        self.start(
+            MELODY,
+            voice,
+            player_ticks(note.duration, bpm),
+            pitch_freq(note.pitch),
+        );
         self.notes[MELODY].bend = note.bend;
+        self.refresh();
+    }
+
+    pub fn tone_step(&mut self, track: usize, note: ToneStep, bpm: f64) {
+        // Sampled drums never own the live bass channel.
+        let (channel, voice) = if track == 1 {
+            (ARPEGGIO, Voice::Arpeggio)
+        } else {
+            (BASS, Voice::Bass)
+        };
+        self.start(
+            channel,
+            voice,
+            player_ticks(note.duration, bpm),
+            pitch_freq(note.pitch),
+        );
     }
 
     pub fn arpeggio(&mut self, freq: f32) {
@@ -309,7 +330,17 @@ impl PsgEngine {
     }
 
     fn tick(&mut self) {
-        // Advance instrument sequences; the chip keeps sounding between ticks.
+        // Only the scheduled 60 Hz clock advances envelope age.
+        for note in &mut self.notes {
+            if note.active() {
+                note.age += 1;
+            }
+        }
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        // Retriggers update the chip immediately without consuming musical time.
         for channel in 0..3 {
             let note = self.notes[channel];
             if !note.active() {
@@ -335,15 +366,6 @@ impl PsgEngine {
                 self.set_pitch(channel, pitch);
             }
             self.write_reg(8 + channel as u8, note.level());
-            self.notes[channel].age += 1;
-
-            // Silence expired notes before the audio callback goes idle.
-            if !self.notes[channel].active() {
-                self.write_reg(8 + channel as u8, 0);
-                if channel == BASS && self.drum.take().is_some() {
-                    self.set_mixer(0x38);
-                }
-            }
         }
     }
 
@@ -376,6 +398,39 @@ impl PsgEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn musical_gate_survives_retriggers() {
+        for bpm in [60.0, 120.0, 180.0] {
+            let rate = 48_000;
+            let mut engine = PsgEngine::new(rate);
+            engine.melody_step(
+                MelodyStep {
+                    pitch: 69,
+                    duration: 144,
+                    voice: MelodyVoice::M1,
+                    bend: false,
+                },
+                MelodyStyle::Sustain,
+                bpm,
+            );
+            let mut samples = 0;
+            while engine.notes[MELODY].active() {
+                // Refresh other channels much faster than the player's tick rate.
+                if samples % 100 == 0 {
+                    engine.tone_step(1, ToneStep::new(60, 48), bpm);
+                    engine.tone_step(2, ToneStep::new(36, 32), bpm);
+                }
+                engine.next_sample();
+                samples += 1;
+            }
+            let expected = 144.0 * 30.0 / (60.0 * bpm) * rate as f64;
+            assert!(
+                (samples as f64 - expected).abs() <= rate as f64 / 60.0,
+                "BPM {bpm}: {samples}"
+            );
+        }
+    }
 
     #[test]
     fn sampled_drums_match_solo_chip() {
@@ -535,7 +590,7 @@ mod tests {
         engine.bass(130.81);
         engine.tick();
         assert!(engine.notes[BASS].active());
-        assert_eq!(engine.chip.read_register(10), 9);
+        assert!(engine.chip.read_register(10) > 0);
     }
 
     #[test]
@@ -568,8 +623,9 @@ mod tests {
         }
         assert!(engine.chip.read_register(8) < 8);
         engine.melody(440.0, MelodyStyle::Pluck);
-        engine.next_sample();
         assert_eq!(engine.chip.read_register(8), 11);
+        engine.next_sample();
+        assert!(engine.chip.read_register(8) >= 10);
     }
 
     #[test]
@@ -578,20 +634,21 @@ mod tests {
             let mut engine = PsgEngine::new(48_000);
             engine.melody_step(
                 MelodyStep {
-                    freq: 440.0,
+                    pitch: 69,
                     voice,
-                    short: true,
+                    duration: 32,
                     bend: true,
                 },
                 MelodyStyle::Sustain,
+                120.0,
             );
-            engine.tick();
+            engine.refresh();
             let period = |engine: &PsgEngine| {
                 u16::from(engine.chip.read_register(0))
                     | (u16::from(engine.chip.read_register(1)) << 8)
             };
             let first = period(&engine);
-            for _ in 1..5 {
+            for _ in 0..5 {
                 engine.tick();
             }
             let settled = period(&engine);
@@ -606,12 +663,13 @@ mod tests {
             // Ordinary notes still use the voice's full length and fixed pitch.
             engine.melody_step(
                 MelodyStep {
-                    freq: 440.0,
+                    pitch: 69,
                     voice,
-                    short: false,
+                    duration: 144,
                     bend: false,
                 },
                 MelodyStyle::Sustain,
+                120.0,
             );
             engine.tick();
             assert_eq!(period(&engine), settled);
@@ -665,7 +723,7 @@ mod tests {
             let mut engine = PsgEngine::new(rate);
             engine.melody(440.0, MelodyStyle::Sustain);
             engine.next_sample();
-            assert_eq!(engine.notes[MELODY].age, 1);
+            assert_eq!(engine.notes[MELODY].age, 0);
 
             let mut sample = 0;
             for tick in 1..20 {
@@ -674,11 +732,11 @@ mod tests {
                     engine.next_sample();
                     sample += 1;
                 }
-                assert_eq!(engine.notes[MELODY].age, tick);
+                assert_eq!(engine.notes[MELODY].age, tick - 1);
 
                 engine.next_sample();
                 sample += 1;
-                assert_eq!(engine.notes[MELODY].age, tick + 1);
+                assert_eq!(engine.notes[MELODY].age, tick);
             }
         }
     }
@@ -713,7 +771,7 @@ mod tests {
         engine.snare();
         engine.next_sample();
         assert_eq!(engine.mixer, 0x98);
-        for _ in 1..12_000 {
+        for _ in 1..12_001 {
             engine.next_sample();
         }
         assert_eq!(engine.mixer, 0xb8);

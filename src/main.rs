@@ -1,3 +1,4 @@
+mod music;
 mod psg;
 mod sequencer;
 mod ui;
@@ -18,21 +19,22 @@ fn trigger_step(
     pattern: &Pattern,
     step: usize,
     muted: [bool; TRACKS],
+    bpm: f64,
 ) {
     if !muted[0]
         && let Some(note) = pattern.melody[step]
     {
-        engine.melody_step(note, pattern.melody_style);
+        engine.melody_step(note, pattern.melody_style, bpm);
     }
     if !muted[1]
-        && let Some(freq) = pattern.arpeggio[step]
+        && let Some(note) = pattern.arpeggio[step]
     {
-        engine.arpeggio(freq);
+        engine.tone_step(1, note, bpm);
     }
     if !muted[2]
-        && let Some(freq) = pattern.bass[step]
+        && let Some(note) = pattern.bass[step]
     {
-        engine.bass(freq);
+        engine.tone_step(2, note, bpm);
     }
     if !muted[3] {
         drums.trigger(pattern.drums[step]);
@@ -161,7 +163,7 @@ where
             for frame in data.chunks_mut(channels) {
                 if playing {
                     if let Some(step) = clock.advance(bpm) {
-                        trigger_step(&mut engine, &mut drums, pattern, step, muted);
+                        trigger_step(&mut engine, &mut drums, pattern, step, muted, bpm);
                         pending_step = Some(step);
                     }
                 } else {
@@ -266,26 +268,26 @@ mod tests {
             match voice {
                 0 => {
                     pattern.melody[0] = Some(sequencer::MelodyStep {
-                        freq: 440.0,
+                        pitch: 69,
                         voice: sequencer::MelodyVoice::M1,
-                        short: false,
+                        duration: 144,
                         bend: false,
                     })
                 }
                 1 => {
                     pattern.melody[0] = Some(sequencer::MelodyStep {
-                        freq: 440.0,
+                        pitch: 69,
                         voice: sequencer::MelodyVoice::M2,
-                        short: false,
+                        duration: 144,
                         bend: false,
                     })
                 }
-                2 => pattern.arpeggio[0] = Some(261.63),
-                3 => pattern.bass[0] = Some(130.81),
+                2 => pattern.arpeggio[0] = Some(sequencer::ToneStep::new(60, 48)),
+                3 => pattern.bass[0] = Some(sequencer::ToneStep::new(48, 32)),
                 _ => pattern.drums[0].snare = true,
             }
             let mut drums = DrumSampler::new(48_000);
-            trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS]);
+            trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS], 120.0);
             assert!(engine.active() || drums.active());
             let peak = (0..4096)
                 .map(|_| (engine.next_sample() + drums.next_sample()).abs())
@@ -301,7 +303,7 @@ mod tests {
             }] = true;
             let mut silent = PsgEngine::new(48_000);
             let mut silent_drums = DrumSampler::new(48_000);
-            trigger_step(&mut silent, &mut silent_drums, &pattern, 0, muted);
+            trigger_step(&mut silent, &mut silent_drums, &pattern, 0, muted, 120.0);
             assert!(
                 !silent.active() && !silent_drums.active(),
                 "muted voice {voice} played"
@@ -333,6 +335,7 @@ mod tests {
             &pattern,
             sequencer::STEPS - 1,
             [false; TRACKS],
+            120.0,
         );
         assert!(drums.active());
     }
@@ -346,13 +349,13 @@ mod tests {
             drums: [DrumStep::default(); sequencer::STEPS],
             ..Pattern::default()
         };
-        pattern.bass[0] = Some(130.81);
+        pattern.bass[0] = Some(sequencer::ToneStep::new(48, 32));
         pattern.drums[0].snare = true;
         pattern.drums[0].hat = Some(Hat::Closed);
 
         let mut engine = PsgEngine::new(48_000);
         let mut drums = DrumSampler::new(48_000);
-        trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS]);
+        trigger_step(&mut engine, &mut drums, &pattern, 0, [false; TRACKS], 120.0);
         assert!(engine.active() && drums.active());
 
         for track in [2, 3] {
@@ -360,7 +363,7 @@ mod tests {
             muted[track] = true;
             let mut engine = PsgEngine::new(48_000);
             let mut drums = DrumSampler::new(48_000);
-            trigger_step(&mut engine, &mut drums, &pattern, 0, muted);
+            trigger_step(&mut engine, &mut drums, &pattern, 0, muted, 120.0);
             assert_eq!(engine.active(), track == 3);
             assert_eq!(drums.active(), track == 2);
             let peak = (0..4096)

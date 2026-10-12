@@ -491,9 +491,9 @@ mod tests {
             let mut s = shared.lock().unwrap();
             s.current_step = 1;
             s.pattern.melody[4] = Some(crate::sequencer::MelodyStep {
-                freq: 392.0,
+                pitch: 67,
                 voice: crate::sequencer::MelodyVoice::M2,
-                short: false,
+                duration: 144,
                 bend: false,
             });
             s.playing = true;
