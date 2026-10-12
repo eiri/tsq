@@ -1,6 +1,7 @@
 //! Harmony is shared by every pitched supporting track.
+use crate::music::{ARP_GATE, ToneStep};
 use crate::music::{BAR_UNITS, BARS, Interval, LOOP_UNITS, MelodyInfo, STEP_UNITS, beat_weight};
-use crate::sequencer::{Mode, Pattern};
+use crate::sequencer::{ArpShape, Mode, Pattern, STEPS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -325,6 +326,195 @@ pub fn choose_harmony(
     }
 }
 
+pub const ARP_LOW: u8 = 48;
+pub const ARP_HIGH: u8 = 79;
+const PLACEMENTS: usize = 6;
+const PLACEMENT_MARGIN: i32 = 12;
+
+fn arp_line(placement: [u8; 3], shape: ArpShape) -> [u8; 6] {
+    let [a, b, c] = placement;
+    match shape {
+        ArpShape::Classic => [a, b, c, c, b, a],
+        ArpShape::Up => [a, b, c, a, b, c],
+        ArpShape::Down => [c, b, a, c, b, a],
+        ArpShape::Repeat => [a, c, b, c, a, c],
+    }
+}
+
+fn placements(chord: Chord, info: &MelodyInfo, bar: usize) -> Vec<[u8; 3]> {
+    let classes = chord.classes();
+    let mut options = Vec::new();
+    for low in ARP_LOW..=ARP_HIGH - 7 {
+        if !classes.contains(&(low % 12)) {
+            continue;
+        }
+        let upper: Vec<_> = (low + 1..=ARP_HIGH)
+            .filter(|p| classes.contains(&(p % 12)))
+            .take(2)
+            .collect();
+        if upper.len() == 2 {
+            options.push([low, upper[0], upper[1]]);
+        }
+    }
+    let register = info.bars[bar].low.unwrap_or(72);
+    options.sort_by_key(|p| {
+        (
+            p[2].saturating_sub(register) * 2 + p[0].abs_diff(register.saturating_sub(12)),
+            *p,
+        )
+    });
+    options.truncate(PLACEMENTS);
+    options.sort();
+    options
+}
+
+fn arp_mask(info: &MelodyInfo, bar: usize, rng: &mut fastrand::Rng) -> Vec<usize> {
+    let summary = info.bars[bar];
+    let target = if summary.attacks >= 5 {
+        2
+    } else if summary.attacks >= 3 {
+        rng.usize(3..5)
+    } else {
+        rng.usize(4..7)
+    };
+    let mut steps: Vec<_> = (0..8).collect();
+    let jitter: [u8; 8] = std::array::from_fn(|_| rng.u8(0..3));
+    // Prefer gaps and quiet offbeats, leaving room under busy lead passages.
+    steps.sort_by_key(|&s| {
+        let sounding = info.sounding((bar * 8 + s) as u16 * STEP_UNITS).is_some();
+        let accent = summary.accents & (1 << s) != 0;
+        (u8::from(sounding) * 4 + u8::from(accent) * 4 + jitter[s], s)
+    });
+    steps.truncate(target);
+    steps.sort();
+    steps
+}
+
+fn clash(info: &MelodyInfo, pitch: u8, units: u16) -> bool {
+    info.intervals.iter().any(|i| {
+        i.end > units
+            && i.start < units + ARP_GATE
+            && i.pitch.abs_diff(pitch) <= 2
+            && i.pitch != pitch
+            && i.end - i.start >= STEP_UNITS
+    })
+}
+
+fn placement_cost(
+    info: &MelodyInfo,
+    bar: usize,
+    pitches: [u8; 3],
+    mask: &[usize],
+    shape: ArpShape,
+) -> i32 {
+    let line = arp_line(pitches, shape);
+    let summary = info.bars[bar];
+    let register = summary.low.unwrap_or(72);
+    let top = summary.high.unwrap_or(84);
+    let mut cost = i32::from(pitches[2].saturating_sub(register)) * 2;
+    // Close conflicts cost more than soft register crossings.
+    for (index, &step) in mask.iter().enumerate() {
+        let pitch = line[index];
+        if clash(info, pitch, (bar * 8 + step) as u16 * STEP_UNITS) {
+            cost += 40;
+        }
+        cost += i32::from(pitch.saturating_sub(top));
+    }
+    cost
+}
+
+fn arp_movement(from: [u8; 3], to: [u8; 3], from_mask: &[usize], shape: ArpShape) -> i32 {
+    let placement: i32 = from
+        .iter()
+        .zip(to)
+        .map(|(&a, b)| i32::from(a.abs_diff(b)))
+        .sum();
+    let a = arp_line(from, shape);
+    let b = arp_line(to, shape);
+    placement + i32::from(a[from_mask.len() - 1].abs_diff(b[0])) * 2
+}
+
+pub fn render_arpeggio(pattern: &mut Pattern, info: &MelodyInfo, rng: &mut fastrand::Rng) {
+    pattern.arpeggio_shape = match rng.usize(0..4) {
+        0 => ArpShape::Classic,
+        1 => ArpShape::Up,
+        2 => ArpShape::Down,
+        _ => ArpShape::Repeat,
+    };
+    pattern.arpeggio_sevenths.fill(false);
+    let shape = pattern.arpeggio_shape;
+    let options: Vec<_> = (0..BARS)
+        .map(|b| placements(pattern.harmony.chords[b], info, b))
+        .collect();
+    let masks: Vec<_> = (0..BARS).map(|b| arp_mask(info, b, rng)).collect();
+    let costs: Vec<Vec<_>> = (0..BARS)
+        .map(|b| {
+            options[b]
+                .iter()
+                .map(|&p| placement_cost(info, b, p, &masks[b], shape))
+                .collect()
+        })
+        .collect();
+    let mut paths = Vec::new();
+    // Find smooth placements across the loop, including the rendered line boundary.
+    for first in 0..options[0].len() {
+        let mut states: Vec<Option<Path>> = vec![None; options[0].len()];
+        states[first] = Some(Path {
+            score: -costs[0][first],
+            slots: vec![first],
+        });
+        for bar in 1..BARS {
+            let mut next = vec![None; options[bar].len()];
+            for (to, state) in next.iter_mut().enumerate() {
+                for (from, previous) in states.iter().enumerate() {
+                    let Some(previous) = previous else {
+                        continue;
+                    };
+                    let score = previous.score
+                        - costs[bar][to]
+                        - arp_movement(
+                            options[bar - 1][from],
+                            options[bar][to],
+                            &masks[bar - 1],
+                            shape,
+                        );
+                    if state.as_ref().is_none_or(|p: &Path| score > p.score) {
+                        let mut slots = previous.slots.clone();
+                        slots.push(to);
+                        *state = Some(Path { score, slots });
+                    }
+                }
+            }
+            states = next;
+        }
+        for (last, path) in states.into_iter().enumerate() {
+            if let Some(mut path) = path {
+                path.score -= arp_movement(
+                    options[BARS - 1][last],
+                    options[0][first],
+                    &masks[BARS - 1],
+                    shape,
+                );
+                paths.push(path);
+            }
+        }
+    }
+    retain(&mut paths, COMPLETE_PATHS);
+    let best = paths[0].score;
+    paths.retain(|p| p.score >= best - PLACEMENT_MARGIN);
+    let chosen = &paths[rng.usize(0..paths.len())];
+    pattern.arpeggio = [None; STEPS];
+    for bar in 0..BARS {
+        let line = arp_line(options[bar][chosen.slots[bar]], shape);
+        for (i, &step) in masks[bar].iter().enumerate() {
+            let units = (bar * 8 + step) as u16 * STEP_UNITS;
+            if !clash(info, line[i], units) {
+                pattern.arpeggio[bar * 8 + step] = Some(ToneStep::new(line[i], ARP_GATE));
+            }
+        }
+    }
+}
+
 pub fn legacy_root(pattern: &Pattern, bar: usize) -> u8 {
     let chord = pattern.harmony.chords[bar];
     (0..9)
@@ -350,6 +540,76 @@ mod tests {
             });
         }
         MelodyInfo::new(&melody)
+    }
+
+    #[test]
+    fn arpeggio_supports_register() {
+        for lead in [30, 61, 84, 110] {
+            let mut pattern = Pattern {
+                melody: [None; STEPS],
+                ..Pattern::default()
+            };
+            pattern.melody[0] = Some(MelodyStep {
+                pitch: lead,
+                duration: LOOP_UNITS,
+                voice: MelodyVoice::M1,
+                bend: false,
+            });
+            let info = MelodyInfo::new(&pattern.melody);
+            render_arpeggio(&mut pattern, &info, &mut fastrand::Rng::with_seed(42));
+            let mut repeated = pattern.clone();
+            render_arpeggio(&mut repeated, &info, &mut fastrand::Rng::with_seed(42));
+            assert_eq!(pattern.arpeggio, repeated.arpeggio);
+            for (step, note) in pattern
+                .arpeggio
+                .iter()
+                .enumerate()
+                .filter_map(|(s, n)| n.map(|n| (s, n)))
+            {
+                assert!((ARP_LOW..=ARP_HIGH).contains(&note.pitch));
+                assert!(
+                    pattern.harmony.chords[step / 8]
+                        .classes()
+                        .contains(&(note.pitch % 12))
+                );
+                assert!(!clash(&info, note.pitch, step as u16 * STEP_UNITS));
+            }
+            assert!(pattern.arpeggio.iter().flatten().count() > 0);
+        }
+    }
+
+    #[test]
+    fn dense_lead_gets_less_arpeggio() {
+        let mut sparse = Pattern {
+            melody: [None; STEPS],
+            harmony: HarmonyPlan::from_degrees(0, Mode::Major, [0; BARS]),
+            ..Pattern::default()
+        };
+        let mut dense = sparse.clone();
+        dense.melody.fill(Some(MelodyStep {
+            pitch: 72,
+            duration: 60,
+            voice: MelodyVoice::M1,
+            bend: false,
+        }));
+        render_arpeggio(
+            &mut sparse,
+            &MelodyInfo::new(&[None; STEPS]),
+            &mut fastrand::Rng::with_seed(7),
+        );
+        let info = MelodyInfo::new(&dense.melody);
+        render_arpeggio(&mut dense, &info, &mut fastrand::Rng::with_seed(7));
+        assert!(dense.arpeggio.iter().flatten().count() < sparse.arpeggio.iter().flatten().count());
+        assert!(
+            dense
+                .arpeggio
+                .chunks(8)
+                .all(|b| b.iter().flatten().count() <= 2)
+        );
+        let smooth = arp_movement([48, 52, 55], [48, 52, 55], &[0, 2, 4, 6], ArpShape::Classic);
+        let jumpy = arp_movement([48, 52, 55], [72, 76, 79], &[0, 2, 4, 6], ArpShape::Classic);
+        assert!(smooth < jumpy);
+        assert!(placements(degree_chord(0, Mode::Major, 0), &info, 0).len() <= PLACEMENTS);
     }
 
     #[test]
