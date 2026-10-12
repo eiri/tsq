@@ -53,6 +53,11 @@ fn trigger_audition(engine: &mut PsgEngine, drums: &mut DrumSampler, request: Au
     }
 }
 
+fn mix_sample(engine: &mut PsgEngine, drums: &mut DrumSampler) -> f32 {
+    // Leave headroom for simultaneous bass, kit, and melodic voices.
+    (engine.next_sample() + drums.next_sample()) * 0.75
+}
+
 fn write_frame<T: SizedSample + FromSample<f32>>(frame: &mut [T], sample: f32) {
     // Integer conversion requires values below +1, including 24-bit samples.
     let value = T::from_sample(sample.clamp(-1.0, 1.0 - f32::EPSILON));
@@ -175,8 +180,7 @@ where
                 }
 
                 let sample = if playing || engine.active() || drums.active() {
-                    // Leave headroom for simultaneous bass, kit, and melodic voices.
-                    (engine.next_sample() + drums.next_sample()) * 0.75
+                    mix_sample(&mut engine, &mut drums)
                 } else {
                     0.0
                 };
@@ -415,6 +419,470 @@ mod tests {
                 .fold(0.0_f32, f32::max);
             assert!(peak > 0.01, "{request:?} was silent");
             assert!(!engine.active() && !drums.active());
+        }
+    }
+
+    fn render_loops(pattern: &Pattern, bpm: f64, rate: u32, muted: [bool; TRACKS]) -> Vec<f32> {
+        let mut clock = AudioClock::new(rate as f64);
+        let mut engine = PsgEngine::new(rate);
+        let mut drums = DrumSampler::new(rate);
+        let frames = clock.step_samples(bpm) * sequencer::STEPS * 2;
+        (0..frames)
+            .map(|_| {
+                if let Some(step) = clock.advance(bpm) {
+                    trigger_step(&mut engine, &mut drums, pattern, step, muted, bpm);
+                }
+                mix_sample(&mut engine, &mut drums)
+            })
+            .collect()
+    }
+
+    fn fixtures() -> Vec<(
+        &'static str,
+        [Option<sequencer::MelodyStep>; sequencer::STEPS],
+    )> {
+        let note = |pitch, duration| sequencer::MelodyStep {
+            pitch,
+            duration,
+            voice: sequencer::MelodyVoice::M1,
+            bend: false,
+        };
+        let mut sparse = [None; sequencer::STEPS];
+        for step in (0..64).step_by(8) {
+            sparse[step] = Some(note(72, 120));
+        }
+        let dense =
+            std::array::from_fn(|s| Some(note([72, 74, 76, 77, 79, 77, 76, 74][s % 8], 32)));
+        let mut held = [None; sequencer::STEPS];
+        held[7] = Some(note(76, 1500));
+        held[39] = Some(note(74, 1500));
+        let mut chromatic = sparse;
+        for step in (0..64).step_by(8) {
+            chromatic[step] = Some(note([70, 63, 66, 61][step / 8 % 4], 420));
+        }
+        let low = sparse.map(|n| {
+            n.map(|mut n| {
+                n.pitch = 36;
+                n
+            })
+        });
+        let high = sparse.map(|n| {
+            n.map(|mut n| {
+                n.pitch = 108;
+                n
+            })
+        });
+        vec![
+            ("sparse", sparse),
+            ("dense", dense),
+            ("held", held),
+            ("chromatic", chromatic),
+            ("low", low),
+            ("high", high),
+            ("empty", [None; sequencer::STEPS]),
+        ]
+    }
+
+    fn fixture_pattern(melody: [Option<sequencer::MelodyStep>; sequencer::STEPS]) -> Pattern {
+        let base = Pattern {
+            tonic: 0,
+            mode: sequencer::Mode::Major,
+            melody_style: sequencer::MelodyStyle::Sustain,
+            ..sequencer::seeded_pattern(42)
+        };
+        arrange::with_melody(&base, melody)
+    }
+
+    fn diagnostics(pattern: &Pattern) -> (u32, u32, usize, usize, usize) {
+        let info = music::MelodyInfo::new(&pattern.melody);
+        let conflict = (0..music::BARS)
+            .map(|b| arrange::unresolved_units(&info, b, pattern.harmony.chords[b]))
+            .sum();
+        let arp: Vec<_> = pattern.arpeggio.iter().flatten().map(|n| n.pitch).collect();
+        let movement = if arp.is_empty() {
+            0
+        } else {
+            arp.iter()
+                .zip(arp.iter().cycle().skip(1))
+                .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+                .sum()
+        };
+        let crossings = pattern
+            .arpeggio
+            .iter()
+            .enumerate()
+            .filter(|(s, n)| {
+                n.is_some_and(|n| {
+                    info.sounding(*s as u16 * music::STEP_UNITS)
+                        .is_some_and(|p| n.pitch > p)
+                })
+            })
+            .count();
+        let changes = pattern
+            .harmony
+            .chords
+            .iter()
+            .zip(pattern.harmony.chords.iter().cycle().skip(1))
+            .filter(|(a, b)| a != b)
+            .count();
+        (conflict, movement, crossings, changes, arp.len())
+    }
+
+    #[test]
+    fn seeded_arrangement_evaluation() {
+        let mut totals = (0u64, 0u64, 0usize, 0usize, 0usize);
+        let mut peak = 0.0_f32;
+        for tonic in 0..12 {
+            for mode in [sequencer::Mode::Major, sequencer::Mode::Minor] {
+                for seed in [0, 42, 1023] {
+                    let mut pattern = sequencer::seeded_pattern(seed);
+                    pattern.tonic = tonic;
+                    pattern.mode = mode;
+                    (pattern.melody, pattern.melody_style) = crate::melody::generate(
+                        tonic,
+                        mode,
+                        &mut fastrand::Rng::with_seed(pattern.seeds.melody),
+                    );
+                    let melody = pattern.melody;
+                    arrange::arrange(&mut pattern);
+                    assert_eq!(pattern.melody, melody, "{tonic} {mode:?} seed {seed}");
+                    let mut repeated = pattern.clone();
+                    arrange::arrange(&mut repeated);
+                    assert_eq!(pattern, repeated, "{tonic} {mode:?} seed {seed}");
+                    for bar in 0..music::BARS {
+                        assert_eq!(
+                            pattern.bass[bar * 8].unwrap().pitch % 12,
+                            pattern.harmony.chords[bar].root,
+                            "{tonic} {mode:?} seed {seed}, bar {bar}"
+                        );
+                    }
+                    for (step, note) in pattern
+                        .arpeggio
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(s, n)| n.map(|n| (s, n)))
+                    {
+                        assert!(
+                            (arrange::ARP_LOW..=arrange::ARP_HIGH).contains(&note.pitch),
+                            "{tonic} {mode:?} seed {seed}, step {step}"
+                        );
+                        assert!(
+                            pattern.harmony.chords[step / 8]
+                                .classes()
+                                .contains(&(note.pitch % 12)),
+                            "{tonic} {mode:?} seed {seed}, step {step}"
+                        );
+                    }
+                    let d = diagnostics(&pattern);
+                    totals.0 += d.0 as u64;
+                    totals.1 += d.1 as u64;
+                    totals.2 += d.2;
+                    totals.3 += d.3;
+                    totals.4 += d.4;
+                    for sample in render_loops(&pattern, 120.0, 8000, [false; TRACKS]) {
+                        assert!(
+                            sample.is_finite() && sample.abs() < 1.0,
+                            "{tonic} {mode:?} seed {seed}: sample {sample}"
+                        );
+                        peak = peak.max(sample.abs());
+                    }
+                }
+            }
+        }
+        // Diagnostics describe music, not pass/fail quality targets. Decorations are allowed.
+        println!(
+            "72 arrangements: weighted unresolved units={}, arp motion={}, crossings={}, chord changes={}, arp attacks={}, peak={peak:.3}",
+            totals.0, totals.1, totals.2, totals.3, totals.4
+        );
+    }
+
+    #[test]
+    fn authored_fixture_evaluation() {
+        for (name, melody) in fixtures() {
+            let pattern = fixture_pattern(melody);
+            assert_eq!(pattern.melody, melody, "{name}");
+            for bpm in [60.0, 120.0, 180.0] {
+                for muted in [[false; TRACKS], [false, true, true, true]] {
+                    let samples = render_loops(&pattern, bpm, 8000, muted);
+                    assert!(
+                        samples.iter().all(|s| s.is_finite() && s.abs() < 1.0),
+                        "{name}, BPM {bpm}"
+                    );
+                }
+            }
+            println!("{name}: {:?}", diagnostics(&pattern));
+        }
+    }
+
+    #[test]
+    fn cold_start_and_loop_carry() {
+        let mut melody = [None; sequencer::STEPS];
+        melody[63] = Some(sequencer::MelodyStep {
+            pitch: 69,
+            duration: 180,
+            voice: sequencer::MelodyVoice::M1,
+            bend: false,
+        });
+        let pattern = arrange::with_melody(&Pattern::default(), melody);
+        let samples = render_loops(&pattern, 120.0, 8000, [false, true, true, true]);
+        let step_frames = AudioClock::new(8000.0).step_samples(120.0);
+        assert!(samples[..step_frames * 8].iter().all(|s| s.abs() < 0.01));
+        let loop_start = step_frames * sequencer::STEPS;
+        assert!(
+            samples[loop_start..loop_start + step_frames]
+                .iter()
+                .any(|s| s.abs() > 0.01)
+        );
+        assert!(
+            render_loops(&pattern, 120.0, 8000, [true; TRACKS])
+                .iter()
+                .all(|s| s.abs() < 0.01)
+        );
+    }
+
+    fn write_wav(path: &std::path::Path, samples: &[f32], rate: u32) -> std::io::Result<()> {
+        use std::io::Write;
+        // Buffer PCM writes; per-sample file syscalls would dominate offline rendering.
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let bytes = samples.len() as u32 * 2;
+        file.write_all(b"RIFF")?;
+        file.write_all(&(36 + bytes).to_le_bytes())?;
+        file.write_all(b"WAVEfmt ")?;
+        file.write_all(&16u32.to_le_bytes())?;
+        file.write_all(&1u16.to_le_bytes())?;
+        file.write_all(&1u16.to_le_bytes())?;
+        file.write_all(&rate.to_le_bytes())?;
+        file.write_all(&(rate * 2).to_le_bytes())?;
+        file.write_all(&2u16.to_le_bytes())?;
+        file.write_all(&16u16.to_le_bytes())?;
+        file.write_all(b"data")?;
+        file.write_all(&bytes.to_le_bytes())?;
+        for sample in samples {
+            file.write_all(
+                &((sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16).to_le_bytes(),
+            )?;
+        }
+        file.flush()
+    }
+
+    fn write_events(path: &std::path::Path, pattern: &Pattern, seed: u64) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+        writeln!(
+            file,
+            "meta,{},{},{},{}",
+            pattern.tonic,
+            u8::from(pattern.mode == sequencer::Mode::Minor),
+            u8::from(pattern.melody_style == sequencer::MelodyStyle::Sustain),
+            seed
+        )?;
+        for step in 0..sequencer::STEPS {
+            if let Some(n) = pattern.melody[step] {
+                writeln!(
+                    file,
+                    "melody,{step},{},{},{},{}",
+                    n.pitch,
+                    n.duration,
+                    u8::from(n.voice == sequencer::MelodyVoice::M2),
+                    u8::from(n.bend)
+                )?;
+            }
+            for (name, note) in [
+                ("arp", pattern.arpeggio[step]),
+                ("bass", pattern.bass[step]),
+            ] {
+                if let Some(n) = note {
+                    writeln!(file, "{name},{step},{},{}", n.pitch, n.duration)?;
+                }
+            }
+            let drum = pattern.drums[step];
+            let hat = match drum.hat {
+                None => 0,
+                Some(Hat::Closed) => 1,
+                Some(Hat::Open) => 2,
+            };
+            writeln!(
+                file,
+                "drum,{step},{},{},{hat}",
+                u8::from(drum.kick),
+                u8::from(drum.snare)
+            )?;
+        }
+        for (bar, chord) in pattern.harmony.chords.iter().enumerate() {
+            let quality = match chord.quality {
+                arrange::Quality::Major => 0,
+                arrange::Quality::Minor => 1,
+                arrange::Quality::Diminished => 2,
+            };
+            writeln!(file, "chord,{bar},{},{quality}", chord.root)?;
+        }
+        Ok(())
+    }
+
+    fn read_events(path: &std::path::Path) -> Pattern {
+        let mut pattern = Pattern {
+            melody: [None; sequencer::STEPS],
+            arpeggio: [None; sequencer::STEPS],
+            bass: [None; sequencer::STEPS],
+            drums: [DrumStep::default(); sequencer::STEPS],
+            ..Pattern::default()
+        };
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let cells: Vec<_> = line.split(',').collect();
+            let number = |i: usize| cells[i].parse::<u16>().unwrap();
+            let step = number(1) as usize;
+            match cells[0] {
+                "meta" => {
+                    pattern.tonic = number(1) as u8;
+                    pattern.mode = if number(2) == 0 {
+                        sequencer::Mode::Major
+                    } else {
+                        sequencer::Mode::Minor
+                    };
+                    pattern.melody_style = if number(3) == 0 {
+                        sequencer::MelodyStyle::Pluck
+                    } else {
+                        sequencer::MelodyStyle::Sustain
+                    };
+                    pattern.seeds = sequencer::seeded_pattern(cells[4].parse().unwrap()).seeds;
+                }
+                "melody" => {
+                    pattern.melody[step] = Some(sequencer::MelodyStep {
+                        pitch: number(2) as u8,
+                        duration: number(3),
+                        voice: if number(4) == 0 {
+                            sequencer::MelodyVoice::M1
+                        } else {
+                            sequencer::MelodyVoice::M2
+                        },
+                        bend: number(5) != 0,
+                    })
+                }
+                "arp" => {
+                    pattern.arpeggio[step] =
+                        Some(sequencer::ToneStep::new(number(2) as u8, number(3)))
+                }
+                "bass" => {
+                    pattern.bass[step] = Some(sequencer::ToneStep::new(number(2) as u8, number(3)))
+                }
+                "drum" => {
+                    pattern.drums[step] = DrumStep {
+                        kick: number(2) != 0,
+                        snare: number(3) != 0,
+                        hat: match number(4) {
+                            0 => None,
+                            1 => Some(Hat::Closed),
+                            _ => Some(Hat::Open),
+                        },
+                    }
+                }
+                "chord" => {
+                    pattern.harmony.chords[step] = arrange::Chord {
+                        root: number(2) as u8,
+                        quality: match number(3) {
+                            0 => arrange::Quality::Major,
+                            1 => arrange::Quality::Minor,
+                            _ => arrange::Quality::Diminished,
+                        },
+                    }
+                }
+                _ => panic!("unknown event in {}: {line}", path.display()),
+            }
+        }
+        pattern
+    }
+
+    #[test]
+    #[ignore = "renders locally adapted baseline events from the step-1 worktree"]
+    fn render_baseline() {
+        let directory = std::path::Path::new("target/listening");
+        let source = directory.join("baseline-events");
+        assert!(
+            source.exists(),
+            "export baseline events from worktree 9b6b2bf first"
+        );
+        let output = directory.join("baseline");
+        std::fs::create_dir_all(&output).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "csv") {
+                continue;
+            }
+            let pattern = read_events(&path);
+            let name = path.file_stem().unwrap().to_str().unwrap();
+            if let Some(name) = name.strip_prefix("arranger-") {
+                let after = read_events(&directory.join("events").join(format!("{name}.csv")));
+                assert_eq!(pattern.melody, after.melody, "matched melody: {name}");
+                assert_eq!(
+                    pattern.melody_style, after.melody_style,
+                    "matched style: {name}"
+                );
+            }
+            for bpm in [60.0, 120.0, 180.0] {
+                for (part, muted) in [
+                    ("full", [false; TRACKS]),
+                    ("lead", [false, true, true, true]),
+                ] {
+                    let samples = render_loops(&pattern, bpm, 22050, muted);
+                    assert!(
+                        samples.iter().all(|s| s.is_finite() && s.abs() < 1.0),
+                        "{name} {bpm} {part}"
+                    );
+                    let path = output.join(format!("{name}-{bpm}-{part}.wav"));
+                    write_wav(&path, &samples, 22050).unwrap();
+                    println!("{}", path.display());
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "writes two-loop WAV examples under target/listening"]
+    fn render_listening() {
+        let directory = std::path::Path::new("target/listening");
+        std::fs::create_dir_all(directory.join("events")).unwrap();
+        let mut examples = Vec::new();
+        for tonic in [0, 5, 11] {
+            for mode in [sequencer::Mode::Major, sequencer::Mode::Minor] {
+                for seed in [0, 42] {
+                    let mut pattern = sequencer::seeded_pattern(seed);
+                    pattern.tonic = tonic;
+                    pattern.mode = mode;
+                    (pattern.melody, pattern.melody_style) = crate::melody::generate(
+                        tonic,
+                        mode,
+                        &mut fastrand::Rng::with_seed(pattern.seeds.melody),
+                    );
+                    arrange::arrange(&mut pattern);
+                    examples.push((format!("key{tonic}-{mode:?}-seed{seed}"), seed, pattern));
+                }
+            }
+        }
+        for (name, melody) in fixtures() {
+            examples.push((name.to_owned(), 42, fixture_pattern(melody)));
+        }
+        for (name, seed, pattern) in examples {
+            write_events(
+                &directory.join("events").join(format!("{name}.csv")),
+                &pattern,
+                seed,
+            )
+            .unwrap();
+            for bpm in [60.0, 120.0, 180.0] {
+                for (part, muted) in [
+                    ("full", [false; TRACKS]),
+                    ("lead", [false, true, true, true]),
+                ] {
+                    let samples = render_loops(&pattern, bpm, 22050, muted);
+                    assert!(
+                        samples.iter().all(|s| s.is_finite() && s.abs() < 1.0),
+                        "{name} {bpm} {part}"
+                    );
+                    let path = directory.join(format!("{name}-{bpm}-{part}.wav"));
+                    write_wav(&path, &samples, 22050).unwrap();
+                    println!("{}", path.display());
+                }
+            }
         }
     }
 

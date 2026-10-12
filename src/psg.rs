@@ -400,7 +400,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn musical_gate_survives_retriggers() {
+    fn gate_survives_retriggers() {
         for bpm in [60.0, 120.0, 180.0] {
             let rate = 48_000;
             let mut engine = PsgEngine::new(rate);

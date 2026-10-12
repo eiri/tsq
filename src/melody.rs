@@ -4,6 +4,11 @@ use crate::music::{LOOP_UNITS, PLUCK_GATE, SHORT_GATE, STEP_UNITS, SUSTAIN_GATE}
 use crate::sequencer::{MelodyStep, MelodyStyle, MelodyVoice, Mode, STEPS};
 
 pub const MAX_JUMP: u8 = 7;
+const PITCH_LOW: u8 = 60;
+const PITCH_SPAN: u8 = 12;
+const MIN_ATTACKS: usize = 3;
+const MAX_ATTACKS: usize = 5;
+const CLOSING_STEPS: [usize; 3] = [56, 58, 60];
 const LARGE_JUMP: u8 = 4;
 const RHYTHMS: [[usize; 5]; 4] = [
     [0, 2, 3, 4, 6],
@@ -30,12 +35,15 @@ pub fn generate(
     mode: Mode,
     rng: &mut fastrand::Rng,
 ) -> ([Option<MelodyStep>; STEPS], MelodyStyle) {
-    let base = 60 + tonic;
+    let base = PITCH_LOW + tonic;
     let mut pitches = [base; 8];
     pitches[..7].copy_from_slice(&scale_offsets(mode).map(|p| base + p));
-    pitches[7] = base + 12;
+    pitches[7] = base + PITCH_SPAN;
     let rhythms = [RHYTHMS[rng.usize(0..4)], RHYTHMS[rng.usize(0..4)]];
-    let counts = [rng.usize(3..6), rng.usize(3..6)];
+    let counts = [
+        rng.usize(MIN_ATTACKS..=MAX_ATTACKS),
+        rng.usize(MIN_ATTACKS..=MAX_ATTACKS),
+    ];
     let contour = rng.usize(0..3);
     let mut motif = Vec::new();
     let mut degree = rng.usize(0..3);
@@ -100,7 +108,7 @@ pub fn generate(
         previous = *pitch;
     }
 
-    let closing_step = [56, 58, 60][rng.usize(0..3)];
+    let closing_step = CLOSING_STEPS[rng.usize(0..CLOSING_STEPS.len())];
     let mut attacks = Vec::new();
     for phrase in 0..4 {
         for &(step, pitch) in &motif {
@@ -128,7 +136,7 @@ pub fn generate(
         .max_by_key(|(_, (_, p))| p)
         .map(|(i, _)| i)
         .unwrap();
-    attacks[high].1 = (attacks[high].1 + 2).min(base + 12);
+    attacks[high].1 = (attacks[high].1 + 2).min(base + PITCH_SPAN);
 
     let mut previous = base;
     let mut recovery = 0;
